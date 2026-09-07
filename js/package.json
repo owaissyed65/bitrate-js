@@ -1,0 +1,42 @@
+{
+  "name": "bitrate-js",
+  "version": "0.0.1",
+  "description": "Client-side HLS / adaptive-bitrate video packager. Chunk, transcode and upload large videos entirely in the browser — Rust/WASM + WebCodecs, no server.",
+  "keywords": ["hls", "abr", "adaptive-bitrate", "video", "transcode", "webcodecs", "wasm", "streaming", "client-side", "fmp4"],
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "engines": { "node": ">=18" },
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
+    "./adapters/presigned": { "types": "./dist/adapters/presigned.d.ts", "import": "./dist/adapters/presigned.js" }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build:wasm": "wasm-pack build ../crates/bitrate-core --target web --out-dir ../../js/src/wasm --out-name bitrate_core",
+    "build": "npm run build:wasm && tsup",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run build && npm run test"
+  },
+  "dependencies": {},
+  "peerDependencies": {
+    "@aws-sdk/client-s3": ">=3",
+    "@supabase/supabase-js": ">=2",
+    "appwrite": ">=14"
+  },
+  "peerDependenciesMeta": {
+    "@aws-sdk/client-s3": { "optional": true },
+    "@supabase/supabase-js": { "optional": true },
+    "appwrite": { "optional": true }
+  },
+  "devDependencies": {
+    "tsup": "^8.3.5",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}

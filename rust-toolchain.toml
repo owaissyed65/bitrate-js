@@ -1,0 +1,5 @@
+# Pinned for reproducible builds (see SECURITY.md §4).
+[toolchain]
+channel = "1.84.0"
+targets = ["wasm32-unknown-unknown"]
+components = ["rustfmt", "clippy"]

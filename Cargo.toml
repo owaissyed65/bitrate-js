@@ -1,0 +1,11 @@
+[workspace]
+members = ["crates/bitrate-core"]
+resolver = "2"
+
+[profile.release]
+# WASM payload size matters more than compile time for a published package.
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
