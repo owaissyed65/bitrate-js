@@ -3,75 +3,67 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>bitrate — client-side HLS packager</title>
+    <title>bitrate — feature demo</title>
     <style>
       :root {
-        --bg: #0f1115;
-        --panel: #171a21;
-        --border: #262b36;
-        --text: #e6e9ef;
-        --muted: #8b93a3;
-        --accent: #4f8cff;
-        --ok: #3fb950;
-        --err: #f85149;
-        color-scheme: dark;
+        --bg: #0d0f14; --panel: #151922; --panel2: #1b202b; --border: #272d3a;
+        --text: #e8ecf3; --muted: #8d96a8; --accent: #4f8cff; --ok: #3fb950;
+        --warn: #d29922; --err: #f85149; color-scheme: dark;
       }
       * { box-sizing: border-box; }
       body {
-        margin: 0;
-        padding: 2rem 1.25rem 4rem;
-        background: var(--bg);
-        color: var(--text);
+        margin: 0; padding: 2rem 1.25rem 5rem; background: var(--bg); color: var(--text);
         font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
       }
-      main { max-width: 900px; margin: 0 auto; }
-      h1 { font-size: 1.5rem; margin: 0 0 0.25rem; }
-      .sub { color: var(--muted); margin: 0 0 1.75rem; }
-      .panel {
-        background: var(--panel);
-        border: 1px solid var(--border);
-        border-radius: 10px;
-        padding: 1.25rem;
-        margin-bottom: 1.25rem;
+      main { max-width: 980px; margin: 0 auto; }
+      h1 { font-size: 1.6rem; margin: 0 0 0.25rem; }
+      h2 { font-size: 1.05rem; margin: 0 0 0.75rem; display: flex; align-items: center; gap: 0.6rem; }
+      h2 .tag {
+        font-size: 0.68rem; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase;
+        padding: 0.15rem 0.45rem; border-radius: 4px; background: var(--panel2);
+        color: var(--muted); border: 1px solid var(--border);
       }
-      label.drop {
-        display: block;
-        border: 1.5px dashed var(--border);
-        border-radius: 8px;
-        padding: 2rem 1rem;
-        text-align: center;
-        cursor: pointer;
-        color: var(--muted);
+      .sub { color: var(--muted); margin: 0 0 1.5rem; }
+      section {
+        background: var(--panel); border: 1px solid var(--border);
+        border-radius: 10px; padding: 1.15rem 1.25rem; margin-bottom: 1rem;
       }
-      label.drop:hover { border-color: var(--accent); color: var(--text); }
-      input[type="file"] { display: none; }
-      .row { display: flex; gap: 1rem; flex-wrap: wrap; align-items: center; margin-top: 1rem; }
-      .row label { color: var(--muted); font-size: 0.9rem; }
-      input[type="number"] {
-        width: 5rem; background: var(--bg); color: var(--text);
-        border: 1px solid var(--border); border-radius: 6px; padding: 0.35rem 0.5rem;
-      }
+      p.hint { color: var(--muted); font-size: 0.88rem; margin: 0 0 0.9rem; }
+      .row { display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: center; }
+      .row + .row { margin-top: 0.75rem; }
       button {
         background: var(--accent); color: #fff; border: 0; border-radius: 6px;
-        padding: 0.5rem 1rem; font-weight: 600; cursor: pointer;
+        padding: 0.45rem 0.9rem; font-weight: 600; font-size: 0.9rem; cursor: pointer;
       }
-      button:disabled { opacity: 0.5; cursor: default; }
-      progress { width: 100%; height: 8px; }
-      table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
-      th, td { text-align: left; padding: 0.35rem 0.5rem; border-bottom: 1px solid var(--border); }
-      th { color: var(--muted); font-weight: 500; }
-      td.num { text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); }
-      code { background: var(--bg); padding: 0.1rem 0.35rem; border-radius: 4px; }
-      pre {
-        background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
-        padding: 0.75rem; overflow-x: auto; font-size: 0.82rem; max-height: 260px;
+      button.ghost { background: var(--panel2); color: var(--text); border: 1px solid var(--border); }
+      button:disabled { opacity: 0.45; cursor: default; }
+      input[type="number"], select {
+        background: var(--bg); color: var(--text); border: 1px solid var(--border);
+        border-radius: 6px; padding: 0.35rem 0.5rem; font-size: 0.9rem;
       }
-      .stat { display: flex; gap: 2rem; flex-wrap: wrap; }
-      .stat div span { display: block; color: var(--muted); font-size: 0.8rem; }
-      .stat div strong { font-size: 1.15rem; font-variant-numeric: tabular-nums; }
-      .err { color: var(--err); }
-      .ok { color: var(--ok); }
-      video { width: 100%; border-radius: 8px; background: #000; }
+      input[type="number"] { width: 4.5rem; }
+      input[type="file"] { font-size: 0.85rem; color: var(--muted); max-width: 100%; }
+      label { color: var(--muted); font-size: 0.88rem; }
+      progress { width: 100%; height: 6px; margin-top: 0.75rem; }
+      .out {
+        margin-top: 0.9rem; background: var(--bg); border: 1px solid var(--border);
+        border-radius: 6px; padding: 0.7rem 0.8rem; font-family: ui-monospace, monospace;
+        font-size: 0.79rem; line-height: 1.5; white-space: pre-wrap; max-height: 260px;
+        overflow-y: auto; color: var(--muted);
+      }
+      .out:empty { display: none; }
+      .out .ok { color: var(--ok); }
+      .out .err { color: var(--err); }
+      .out .warn { color: var(--warn); }
+      .out .hd { color: var(--text); font-weight: 600; }
+      video { width: 100%; max-width: 480px; border-radius: 8px; background: #000; margin-top: 0.9rem; }
+      .stats { display: flex; gap: 1.5rem; flex-wrap: wrap; margin-top: 0.9rem; }
+      .stats div span { display: block; color: var(--muted); font-size: 0.75rem; }
+      .stats div strong { font-size: 1.05rem; font-variant-numeric: tabular-nums; }
+      .badge { font-size: 0.8rem; padding: 0.15rem 0.5rem; border-radius: 999px; }
+      .badge.y { background: rgba(63,185,80,0.15); color: var(--ok); }
+      .badge.n { background: rgba(248,81,73,0.15); color: var(--err); }
+      code { background: var(--bg); padding: 0.1rem 0.3rem; border-radius: 4px; font-size: 0.85em; }
       [hidden] { display: none !important; }
     </style>
   </head>
@@ -79,50 +71,125 @@
     <main>
       <h1>bitrate</h1>
       <p class="sub">
-        Chunk a video into seekable HLS — entirely in your browser. No server, no upload.
+        Client-side HLS packaging. Every panel below runs the real library in this tab —
+        no server, nothing uploaded.
       </p>
 
-      <div class="panel">
-        <label class="drop" for="file">
-          <strong>Choose a video</strong><br />
-          MP4 with an H.264 track. Nothing leaves your machine.
-        </label>
-        <input id="file" type="file" accept="video/mp4,video/quicktime" />
+      <!-- 1. capabilities -->
+      <section>
+        <h2>Capabilities <span class="tag">isSupported()</span></h2>
+        <p class="hint">What this browser can do. Feature-detect before starting work.</p>
+        <div class="row" id="caps"></div>
+        <div class="out" id="capsOut"></div>
+      </section>
 
+      <!-- 2. remux -->
+      <section>
+        <h2>Remux <span class="tag">mode: remux</span></h2>
+        <p class="hint">
+          Chunk an existing MP4 into seekable HLS with no re-encoding — near-instant, and
+          it needs no WebCodecs. Uses a generated sample, or pick your own MP4.
+        </p>
         <div class="row">
-          <label>Segment length <input id="segdur" type="number" value="6" min="1" max="30" /> s</label>
-          <button id="run" disabled>Package</button>
-          <span id="support" class="sub" style="margin: 0"></span>
+          <button id="remuxSample">Use sample (30s)</button>
+          <input type="file" id="remuxFile" accept="video/mp4,video/quicktime" />
+          <label>Segment <input type="number" id="remuxDur" value="6" min="1" max="30" /> s</label>
         </div>
-      </div>
-
-      <div class="panel" id="statusPanel" hidden>
-        <progress id="progress" max="100" value="0"></progress>
-        <div class="stat" style="margin-top: 1rem">
-          <div><span>Source</span><strong id="srcInfo">—</strong></div>
-          <div><span>Segments</span><strong id="segCount">0</strong></div>
-          <div><span>Output</span><strong id="outSize">0 B</strong></div>
-          <div><span>Elapsed</span><strong id="elapsed">0.0 s</strong></div>
+        <progress id="remuxProg" max="100" value="0" hidden></progress>
+        <div class="stats" id="remuxStats" hidden>
+          <div><span>Source</span><strong id="rxSrc">—</strong></div>
+          <div><span>Segments</span><strong id="rxSeg">0</strong></div>
+          <div><span>Output</span><strong id="rxSize">0 B</strong></div>
+          <div><span>Time</span><strong id="rxTime">—</strong></div>
         </div>
-        <p id="message" style="margin-bottom: 0"></p>
-      </div>
+        <div class="out" id="remuxOut"></div>
+      </section>
 
-      <div class="panel" id="playerPanel" hidden>
-        <h2 style="font-size: 1rem; margin-top: 0">Playback (drag the scrubber to test seeking)</h2>
-        <video id="player" controls></video>
-      </div>
+      <!-- 3. live capture / packageFrames -->
+      <section>
+        <h2>Encode &amp; package frames <span class="tag">packageFrames()</span></h2>
+        <p class="hint">
+          Real H.264 encoded in-browser from canvas frames, then packaged and played back.
+          This is the end-to-end proof — no source file involved.
+        </p>
+        <div class="row">
+          <button id="framesRun">Encode 3s &amp; play</button>
+          <label>Ladder
+            <select id="framesLadder">
+              <option value="240">240p only</option>
+              <option value="240,180">240p + 180p (2 rungs)</option>
+            </select>
+          </label>
+        </div>
+        <progress id="framesProg" max="100" value="0" hidden></progress>
+        <video id="framesVideo" controls muted hidden></video>
+        <div class="out" id="framesOut"></div>
+      </section>
 
-      <div class="panel" id="outputPanel" hidden>
-        <h2 style="font-size: 1rem; margin-top: 0">Output files</h2>
-        <table>
-          <thead>
-            <tr><th>Name</th><th>Type</th><th class="num">Size</th></tr>
-          </thead>
-          <tbody id="files"></tbody>
-        </table>
-        <h2 style="font-size: 1rem">Playlist</h2>
-        <pre id="playlist"></pre>
-      </div>
+      <!-- 4. transcode / ABR -->
+      <section>
+        <h2>Transcode to an ABR ladder <span class="tag">mode: transcode</span></h2>
+        <p class="hint">
+          Decode once, re-encode into several bitrates, emit a master playlist.
+          <strong>Needs a real H.264 MP4</strong> — the generated sample has synthetic frame
+          payloads a decoder will reject, so pick a genuine video here.
+        </p>
+        <div class="row">
+          <input type="file" id="abrFile" accept="video/mp4,video/quicktime" />
+          <button id="abrRun" disabled>Transcode</button>
+        </div>
+        <progress id="abrProg" max="100" value="0" hidden></progress>
+        <video id="abrVideo" controls muted hidden></video>
+        <div class="out" id="abrOut"></div>
+      </section>
+
+      <!-- 5. queue -->
+      <section>
+        <h2>Queue: many files, failures survived <span class="tag">HlsQueue</span></h2>
+        <p class="hint">
+          Three jobs are queued — and the middle one is deliberately corrupt. The batch must
+          record it and keep going, which is what <code>drain()</code> reports.
+        </p>
+        <div class="row">
+          <button id="queueRun">Run batch (2 good + 1 bad)</button>
+          <label><input type="checkbox" id="queueFlaky" /> flaky uploads (test retries)</label>
+        </div>
+        <progress id="queueProg" max="100" value="0" hidden></progress>
+        <div class="out" id="queueOut"></div>
+      </section>
+
+      <!-- 6. resume -->
+      <section>
+        <h2>Resume after an interruption <span class="tag">IndexedDB</span></h2>
+        <p class="hint">
+          Starts a job, kills it partway as if the tab closed, then resumes from the
+          checkpoint — and checks the stitched result matches an uninterrupted run.
+        </p>
+        <div class="row">
+          <button id="resumeRun">Interrupt &amp; resume</button>
+          <button id="resumeClear" class="ghost">Clear stored jobs</button>
+        </div>
+        <div class="out" id="resumeOut"></div>
+      </section>
+
+      <!-- 7. upload adapters -->
+      <section>
+        <h2>Upload adapters <span class="tag">upload-to-anywhere</span></h2>
+        <p class="hint">
+          Every output file reaches your uploader in the same shape, whatever the backend.
+          This mock records what a real S3 / Supabase / Appwrite adapter would receive.
+        </p>
+        <div class="row"><button id="adapterRun">Show the upload stream</button></div>
+        <div class="out" id="adapterOut"></div>
+      </section>
+
+      <!-- 8. security -->
+      <section>
+        <h2>Security guarantees <span class="tag">enforced, not documented</span></h2>
+        <p class="hint">Live checks against the running library.</p>
+        <div class="row"><button id="secRun">Run checks</button></div>
+        <div class="out" id="secOut"></div>
+      </section>
     </main>
 
     <script type="module" src="./main.js"></script>
