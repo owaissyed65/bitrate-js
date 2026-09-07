@@ -5,6 +5,7 @@ import {
   inspect,
   isTranscodeSupported,
   rewritePlaylistUris,
+  type JobProgress,
   type SourceInfo,
 } from "bitrate-js";
 import { appwriteAdapter } from "bitrate-js/adapters/appwrite";
@@ -87,6 +88,16 @@ interface Uploaded {
   url: string;
 }
 
+/** Plain names for the stages, so the panel never just sits there silently. */
+const STAGE_LABEL: Record<string, string> = {
+  reading: "Reading the source",
+  packaging: "Chunking",
+  audio: "Re-encoding audio",
+  encoding: "Encoding video",
+  finishing: "Writing playlists",
+  uploading: "Uploading",
+};
+
 export function AppwritePanel() {
   const [settings, setSettings] = useState<Settings>(EMPTY);
   const [file, setFile] = useState<File | null>(null);
@@ -102,6 +113,11 @@ export function AppwritePanel() {
   const [playlistUrl, setPlaylistUrl] = useState<string | null>(null);
   const [detecting, setDetecting] = useState(false);
   const [probes, setProbes] = useState<{ label: string; url: string; result: ProbeResult }[]>([]);
+
+  // A live line rather than a log entry: these fire hundreds of times, and a
+  // transcode spends minutes in stages that would otherwise print nothing at
+  // all — which is indistinguishable from being stuck.
+  const [progress, setProgress] = useState<JobProgress | null>(null);
 
   /** Try each known endpoint until one admits to hosting this project. */
   async function detectRegion() {
@@ -158,6 +174,7 @@ export function AppwritePanel() {
     if (!file) return;
     setRunning(true);
     setLog([]);
+    setProgress(null);
     setUploaded([]);
     setPlaylistUrl(null);
 
@@ -217,6 +234,7 @@ export function AppwritePanel() {
           }
           await put(item);
         },
+        onProgress: (p) => setProgress(p),
         onJobDone: () => say("packaging and upload finished", "ok"),
         onJobError: ({ error }) => say(error.message, "err"),
       });
@@ -280,6 +298,7 @@ export function AppwritePanel() {
       }
     } finally {
       setRunning(false);
+      setProgress(null);
     }
   }
 
@@ -496,6 +515,55 @@ export function AppwritePanel() {
           <p className="note warn" style={{ marginTop: "0.9rem" }}>
             Fill in the endpoint, project ID and bucket ID above.
           </p>
+        )}
+
+        {progress && (
+          <div
+            style={{
+              marginTop: "1rem",
+              padding: "0.75rem 0.9rem",
+              border: "1px solid var(--line)",
+              borderRadius: "8px",
+              background: "var(--panel-2, rgba(255,255,255,0.02))",
+            }}
+          >
+            <div className="row" style={{ justifyContent: "space-between", marginBottom: "0.5rem" }}>
+              <strong style={{ fontSize: "0.86rem" }}>{STAGE_LABEL[progress.stage ?? "encoding"]}</strong>
+              <span className="mono" style={{ fontSize: "0.8rem", color: "var(--muted)" }}>
+                {progress.stage === "encoding" || progress.stage === "uploading"
+                  ? `${progress.percent.toFixed(1)}% encoded`
+                  : progress.stagePercent !== undefined
+                    ? `${progress.stagePercent.toFixed(0)}%`
+                    : "working"}
+              </span>
+            </div>
+
+            {/* The bar tracks whichever number this stage actually knows. */}
+            <div style={{ height: 6, borderRadius: 3, background: "var(--line)", overflow: "hidden" }}>
+              <div
+                style={{
+                  height: "100%",
+                  width: `${Math.min(
+                    100,
+                    progress.stage === "encoding" || progress.stage === "uploading"
+                      ? progress.percent
+                      : (progress.stagePercent ?? 0),
+                  )}%`,
+                  background: "var(--accent, #4f7cff)",
+                  transition: "width 120ms linear",
+                }}
+              />
+            </div>
+
+            {progress.detail && (
+              <p
+                className="mono"
+                style={{ margin: "0.5rem 0 0", fontSize: "0.76rem", color: "var(--muted)" }}
+              >
+                {progress.detail}
+              </p>
+            )}
+          </div>
         )}
 
         {log.length > 0 && (

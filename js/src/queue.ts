@@ -9,7 +9,11 @@
 
 import { remux, type RemuxOptions, type ResumeState } from "./remux.js";
 import { JobStore, matchesJob, type StoredJob } from "./storage.js";
-import { isTranscodeSupported, transcode, type TranscodeOptions } from "./transcode.js";
+import {
+  isTranscodeSupported,
+  transcode,
+  type TranscodeOptions,
+} from "./transcode.js";
 import { withRetry } from "./upload.js";
 import type {
   JobFailure,
@@ -22,7 +26,8 @@ import type {
 } from "./types.js";
 
 /** Status of one queued video. */
-export type JobStatus = "queued" | "processing" | "done" | "failed" | "cancelled";
+export type JobStatus =
+  "queued" | "processing" | "done" | "failed" | "cancelled";
 
 export interface QueueJob {
   id: string;
@@ -114,7 +119,9 @@ interface Checkpoint {
 }
 
 /** A comparable description of a ladder, or `null` when there is nothing to compare. */
-function ladderKey(ladder?: { height: number; bitrate: number }[]): string | null {
+function ladderKey(
+  ladder?: { height: number; bitrate: number }[],
+): string | null {
   if (!ladder || ladder.length === 0) return null;
   return ladder.map((r) => `${r.height}@${r.bitrate}`).join(",");
 }
@@ -249,7 +256,9 @@ export class HlsQueue {
 
   /** A snapshot of every job, for rendering progress. */
   get jobs(): QueueJob[] {
-    return this.#jobs.map(({ file: _file, prefix: _prefix, produced: _p, ...job }) => ({ ...job }));
+    return this.#jobs.map(
+      ({ file: _file, prefix: _prefix, produced: _p, ...job }) => ({ ...job }),
+    );
   }
 
   /** Stop processing. In-flight files stop at the next sample boundary. */
@@ -342,19 +351,33 @@ export class HlsQueue {
       signal: this.#controller.signal,
       onProgress: ({ fraction }) => {
         job.progress = fraction;
-        this.#options.onProgress?.({ jobId: job.id, rung: null, percent: fraction * 100 });
+        this.#options.onProgress?.({
+          jobId: job.id,
+          rung: null,
+          percent: fraction * 100,
+          stage: "packaging",
+        });
       },
     };
-    if (this.#options.readWindow !== undefined) remuxOptions.readWindow = this.#options.readWindow;
+    if (this.#options.readWindow !== undefined)
+      remuxOptions.readWindow = this.#options.readWindow;
     if (job.resume) remuxOptions.resume = job.resume;
 
     // Checkpointing is driven by onSegment rather than by the output loop:
     // it reports exactly the point a later resume must restart from.
     let pendingCheckpoint: Checkpoint | null = null;
     if (store) {
-      remuxOptions.onSegment = ({ duration, samplesProcessed, audioSamplesProcessed }) => {
+      remuxOptions.onSegment = ({
+        duration,
+        samplesProcessed,
+        audioSamplesProcessed,
+      }) => {
         durations.push(duration);
-        pendingCheckpoint = { durations: [...durations], samplesProcessed, audioSamplesProcessed };
+        pendingCheckpoint = {
+          durations: [...durations],
+          samplesProcessed,
+          audioSamplesProcessed,
+        };
       };
     }
 
@@ -366,7 +389,24 @@ export class HlsQueue {
       signal: this.#controller.signal,
       onProgress: ({ fraction }) => {
         job.progress = fraction;
-        this.#options.onProgress?.({ jobId: job.id, rung: null, percent: fraction * 100 });
+        this.#options.onProgress?.({
+          jobId: job.id,
+          rung: null,
+          percent: fraction * 100,
+          stage: "encoding",
+        });
+      },
+      // The stages before encoding are slow and produce nothing, so a caller
+      // that only watches percent has nothing to show for them.
+      onPhase: ({ stage, fraction, detail }) => {
+        this.#options.onProgress?.({
+          jobId: job.id,
+          rung: null,
+          percent: job.progress * 100,
+          stage,
+          ...(detail !== undefined ? { detail } : {}),
+          ...(fraction !== undefined ? { stagePercent: fraction * 100 } : {}),
+        });
       },
     };
     if (this.#options.ladder) transcodeOptions.ladder = this.#options.ladder;
@@ -375,9 +415,11 @@ export class HlsQueue {
     }
     if (this.#options.profile) transcodeOptions.profile = this.#options.profile;
     if (this.#options.hardwareAcceleration) {
-      transcodeOptions.hardwareAcceleration = this.#options.hardwareAcceleration;
+      transcodeOptions.hardwareAcceleration =
+        this.#options.hardwareAcceleration;
     }
-    if (this.#options.latencyMode) transcodeOptions.latencyMode = this.#options.latencyMode;
+    if (this.#options.latencyMode)
+      transcodeOptions.latencyMode = this.#options.latencyMode;
     if (this.#options.allowUpscale !== undefined) {
       transcodeOptions.allowUpscale = this.#options.allowUpscale;
     }
@@ -421,12 +463,29 @@ export class HlsQueue {
     for await (const output of stream) {
       // A ladder emits a playlist per rung and then the master; the master is
       // the one a player should be given, and it comes last.
-      if (output.isManifest && (!masterPlaylist || output.name.includes("master"))) {
+      if (
+        output.isManifest &&
+        (!masterPlaylist || output.name.includes("master"))
+      ) {
         masterPlaylist = output.name;
       }
       job.produced.push(output.name);
 
       if (upload) {
+        // Say which file, before it goes. An upload is often the slowest part
+        // of a remux and the only part with no progress of its own, so a caller
+        // that reports nothing here appears stalled for its whole duration.
+        this.#options.onProgress?.({
+          jobId: job.id,
+          rung: null,
+          percent: job.progress * 100,
+          stage: "uploading",
+          // No stagePercent: the total file count is not known until the
+          // packager finishes, and inventing a denominator produces the bar
+          // that sits at 99% forever. `produced` already includes this file,
+          // so it is the number being sent, not the number sent.
+          detail: `${output.name} (file ${job.produced.length})`,
+        });
         await upload({ jobId: job.id, ...output });
       }
 
@@ -456,7 +515,11 @@ export class HlsQueue {
   }
 
   /** Build the persisted record for `job` at its current progress. */
-  #snapshot(job: InternalJob, cp: Checkpoint, status: StoredJob["status"]): StoredJob {
+  #snapshot(
+    job: InternalJob,
+    cp: Checkpoint,
+    status: StoredJob["status"],
+  ): StoredJob {
     const now = Date.now();
     const mode = this.#options.mode ?? "auto";
     return {
@@ -469,14 +532,18 @@ export class HlsQueue {
         segmentDuration: this.#options.segmentDuration ?? 6,
         mode,
         // Only meaningful for a re-encode, and only then is it worth the space.
-        ...(mode === "transcode" && this.#options.ladder ? { ladder: this.#options.ladder } : {}),
+        ...(mode === "transcode" && this.#options.ladder
+          ? { ladder: this.#options.ladder }
+          : {}),
       },
       status,
       lastCompletedSegment: cp.durations.length - 1,
       samplesProcessed: cp.samplesProcessed,
       audioSamplesProcessed: cp.audioSamplesProcessed,
       completedSegmentDurations: cp.durations,
-      ...(cp.resumeAtMicros !== undefined ? { resumeAtMicros: cp.resumeAtMicros } : {}),
+      ...(cp.resumeAtMicros !== undefined
+        ? { resumeAtMicros: cp.resumeAtMicros }
+        : {}),
       createdAt: now,
       updatedAt: now,
     };

@@ -41,6 +41,18 @@ export interface TranscodeOptions {
   readWindow?: number | undefined;
   signal?: AbortSignal | undefined;
   onProgress?: ((p: { processed: number; total: number; fraction: number }) => void) | undefined;
+
+  /**
+   * Which stage the job is in.
+   *
+   * `onProgress` only speaks once video encoding has begun, and on a large
+   * source the work before that is neither quick nor visible: indexing a
+   * fragmented file reads all of it, and the audio track is decoded and
+   * re-encoded in full before a single video frame is touched. Without this a
+   * caller has nothing to show for the first stretch of a long job, which is
+   * indistinguishable from a hang.
+   */
+  onPhase?: ((info: TranscodePhase) => void) | undefined;
   /**
    * Re-encode the source audio and mux it into every rendition. Default `true`.
    *
@@ -117,6 +129,23 @@ export interface TranscodeOptions {
         resumeAtMicros: number;
       }) => void)
     | undefined;
+}
+
+/** What a transcode is doing right now. */
+export interface TranscodePhase {
+  /**
+   * - `"reading"` — parsing the container, and indexing fragments for a
+   *   fragmented source, which means reading the whole file.
+   * - `"audio"` — decoding and re-encoding the audio track, done once up front
+   *   and shared by every rung.
+   * - `"encoding"` — the video work `onProgress` reports on.
+   * - `"finishing"` — flushing encoders and writing playlists.
+   */
+  stage: "reading" | "audio" | "encoding" | "finishing";
+  /** How far through this stage, 0–1, where that is knowable. */
+  fraction?: number;
+  /** A short line suitable for showing a user as-is. */
+  detail?: string;
 }
 
 /** Where a previous transcode stopped. */
@@ -559,18 +588,31 @@ export async function* transcode(
     allowUpscale = false,
     resume,
     onSegment,
+    onPhase,
   } = options;
 
   await ensureWasm();
   signal?.throwIfAborted();
 
+  onPhase?.({ stage: "reading", detail: "reading the container" });
+
   const moov = await readMoov(file);
   const demuxer = new Mp4Demuxer(moov);
 
-  // Fragmented sources keep their samples in moof boxes.
+  // Fragmented sources keep their samples in moof boxes. Indexing them means
+  // reading the whole file, which on a large screen recording is a real wait
+  // with nothing to show for it — so say what is happening.
   if (demuxer.isFragmented) {
+    let read = 0;
+    onPhase?.({ stage: "reading", fraction: 0, detail: "indexing a fragmented source" });
     for await (const fragment of readFragments(file, { signal })) {
       demuxer.addFragment(fragment.bytes, fragment.offset);
+      read = fragment.offset + fragment.bytes.length;
+      onPhase?.({
+        stage: "reading",
+        fraction: file.size > 0 ? Math.min(read / file.size, 1) : 0,
+        detail: "indexing a fragmented source",
+      });
     }
   }
 
@@ -637,7 +679,17 @@ export async function* transcode(
         // a chunk, and that config has to exist before any segmenter is created
         // because it changes the init segment. Encoded AAC is small next to the
         // video, so holding it is cheap.
+        let audioDone = 0;
+        onPhase?.({ stage: "audio", fraction: 0, detail: "re-encoding the audio track" });
+
         for await (const item of readSamples(file, audioSamples, { readWindow, signal })) {
+          if (++audioDone % 100 === 0) {
+            onPhase?.({
+              stage: "audio",
+              fraction: audioDone / audioSamples.length,
+              detail: "re-encoding the audio track",
+            });
+          }
           const sample = item.sample as SampleLocation & { decodeTime: number };
           audioPipeline.decode(
             item.data,
@@ -776,6 +828,12 @@ export async function* transcode(
     const frames: VideoFrame[] = [];
     decoder.decoder.ondequeue = null;
 
+    onPhase?.({
+      stage: "encoding",
+      fraction: 0,
+      detail: `encoding ${plan.length} rendition${plan.length === 1 ? "" : "s"}`,
+    });
+
     for await (const item of readSamples(file, samplesForRun, { readWindow, signal })) {
       signal?.throwIfAborted();
       // `readSamples` returns the element type it was given, so the decode time
@@ -834,6 +892,8 @@ export async function* transcode(
       }
       frames.length = 0;
     }
+
+    onPhase?.({ stage: "finishing", detail: "flushing encoders and writing playlists" });
 
     await decoder.decoder.flush();
     if (decoder.failure) throw decoder.failure;

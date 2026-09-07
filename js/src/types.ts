@@ -76,6 +76,18 @@ export interface JobProgress {
   percent: number;
   /** Estimated seconds remaining, when known. */
   etaSeconds?: number;
+  /**
+   * What the job is doing, for a caller that wants to say so.
+   *
+   * `percent` covers video encoding only. A transcode spends real time before
+   * that — indexing a fragmented source reads the whole file, and the audio is
+   * re-encoded in full first — and reporting 0% throughout looks like a hang.
+   * `stage` names that work; `detail` is a line fit to show as-is.
+   */
+  stage?: "reading" | "packaging" | "audio" | "encoding" | "finishing" | "uploading";
+  detail?: string;
+  /** How far through the current stage, 0–100, where that is knowable. */
+  stagePercent?: number;
 }
 
 export interface JobResult {
