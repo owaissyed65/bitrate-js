@@ -12,3 +12,4 @@ pkg
 coverage
 fuzz/artifacts
 fuzz/corpus
+js/src/wasm-inline.ts

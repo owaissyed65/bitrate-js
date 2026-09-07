@@ -19,10 +19,12 @@
 
 use wasm_bindgen::prelude::*;
 
+mod demux;
 mod hls;
 mod mux;
 mod sanitize;
 
+pub use demux::{DemuxError, Mp4Demuxer, SampleRef, VideoTrack};
 pub use hls::{master_playlist, MediaPlaylist, Rung};
 pub use mux::{Fmp4Segmenter, MuxError, Segment};
 pub use sanitize::sanitize_key;

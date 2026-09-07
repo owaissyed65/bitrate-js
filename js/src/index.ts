@@ -33,6 +33,10 @@ export type {
 
 export { MIME_MANIFEST, MIME_SEGMENT } from "./types.js";
 
+export { remux, inspect } from "./remux.js";
+export type { OutputFile, RemuxOptions, SourceInfo } from "./remux.js";
+export { ensureWasm } from "./wasm-loader.js";
+
 /** What the environment must provide for each mode. */
 export interface SupportReport {
   /** Chunking an already-encoded file. Needs only WASM + File APIs. */

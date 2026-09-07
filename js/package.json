@@ -34,7 +34,7 @@
     "dist"
   ],
   "scripts": {
-    "build:wasm": "wasm-pack build ../crates/bitrate-core --target web --out-dir ../../js/src/wasm --out-name bitrate_core",
+    "build:wasm": "wasm-pack build ../crates/bitrate-core --target web --out-dir ../../js/src/wasm --out-name bitrate_core && node scripts/inline-wasm.mjs",
     "build": "npm run build:wasm && tsup",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
