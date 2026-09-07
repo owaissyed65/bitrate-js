@@ -3,6 +3,7 @@ import { useState } from "react";
 import { AdaptersPanel } from "./components/AdaptersPanel";
 import { AppwritePanel } from "./components/AppwritePanel";
 import { CapabilitiesPanel } from "./components/CapabilitiesPanel";
+import { DocsPanel } from "./components/DocsPanel";
 import { PackagePanel } from "./components/PackagePanel";
 import { PlayUrlPanel } from "./components/PlayUrlPanel";
 import { QueuePanel } from "./components/QueuePanel";
@@ -10,6 +11,7 @@ import { ResumePanel } from "./components/ResumePanel";
 import { SecurityPanel } from "./components/SecurityPanel";
 
 const TABS = [
+  { id: "docs", label: "Handbook", element: <DocsPanel /> },
   { id: "package", label: "Package a video", element: <PackagePanel /> },
   { id: "queue", label: "Queue & upload", element: <QueuePanel /> },
   { id: "resume", label: "Resume", element: <ResumePanel /> },
@@ -21,7 +23,7 @@ const TABS = [
 ] as const;
 
 export function App() {
-  const [tab, setTab] = useState<(typeof TABS)[number]["id"]>("package");
+  const [tab, setTab] = useState<(typeof TABS)[number]["id"]>("docs");
 
   return (
     <div className="shell">
