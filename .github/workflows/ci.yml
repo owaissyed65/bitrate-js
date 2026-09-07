@@ -2,7 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # This repository's branch is currently `master`; `main` is here so nothing
+    # silently stops running if it is renamed to GitHub's default.
+    branches: [main, master]
   pull_request:
 
 # Nothing here writes anywhere; publishing lives in release.yml.
