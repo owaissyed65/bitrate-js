@@ -208,9 +208,28 @@
     </main>
 
     <!--
-      Opening this file directly (file://) skips the dev server, and the browser
-      then cannot resolve the bare "bitrate-js" import. Say so plainly rather
-      than leaving a bare module-resolution error in the console.
+      An import map so this page runs under ANY static server — VS Code Live
+      Server, `npx serve`, python -m http.server — not just Vite. Without it the
+      browser has no idea what the bare name "bitrate-js" refers to and fails
+      with "Failed to resolve module specifier".
+
+      Paths are relative to this file, so the repository can be served from any
+      directory. Run `npm run build` in `js/` first: these point at the built
+      package.
+    -->
+    <script type="importmap">
+      {
+        "imports": {
+          "bitrate-js": "../../js/dist/index.js",
+          "hls.js": "./node_modules/hls.js/dist/hls.mjs"
+        }
+      }
+    </script>
+
+    <!--
+      An import map still cannot help over file://, where there is no server to
+      fetch those paths from. Say so plainly rather than leaving a bare
+      module-resolution error in the console.
     -->
     <script>
       if (location.protocol === "file:") {
@@ -223,9 +242,15 @@
                 You opened <code>index.html</code> from disk. Browsers cannot resolve a bare
                 import like <code>"bitrate-js"</code> on their own — the dev server rewrites it.
               </p>
-              <p class="hint">Run this from the repository root, then open the URL it prints:</p>
-              <pre style="background:#0d0f14;border:1px solid #272d3a;border-radius:6px;padding:0.75rem">npm run dev --prefix examples/demo</pre>
-              <p class="hint">Usually <a href="http://localhost:5178" style="color:#4f8cff">http://localhost:5178</a>.</p>
+              <p class="hint">Serve the folder over HTTP instead — any static server will do:</p>
+              <pre style="background:#0d0f14;border:1px solid #272d3a;border-radius:6px;padding:0.75rem">npm run dev --prefix examples/demo
+
+# or VS Code "Live Server", or:
+npx serve examples/demo</pre>
+              <p class="hint">
+                Then open the <code>http://</code> URL it prints. Build the package first
+                with <code>npm run build</code> in <code>js/</code>.
+              </p>
             </section>
           </main>`;
       }

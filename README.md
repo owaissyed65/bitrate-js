@@ -230,11 +230,17 @@ cd js && npm install && npm run build && npm test
 cargo test && cargo clippy --all-targets
 ```
 
-Run the demo:
+Run the demo. It declares an import map, so **any static server works** — Vite, VS Code
+Live Server, `npx serve`, `python -m http.server`. Build the package first, since the demo
+loads `js/dist`:
 
 ```bash
 npm install --prefix examples/demo && npm run dev --prefix examples/demo
 ```
+
+Serving the repository root works too — open `/examples/demo/`. The one thing that does
+*not* work is opening `index.html` straight from disk: over `file://` there is no server to
+load the modules from, and the page will tell you so.
 
 ## License
 

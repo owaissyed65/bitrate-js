@@ -28,6 +28,36 @@ window.bitrate = bitrate;
 
 const $ = (id) => document.getElementById(id);
 
+/**
+ * Fetch one of the generated sample videos.
+ *
+ * Where `public/` ends up depends on how the page is served: Vite maps it to
+ * the site root, while a plain static server leaves it beside this file. Try
+ * both rather than tying the demo to one server.
+ */
+const sampleCache = new Map();
+async function fetchSample(name) {
+  if (sampleCache.has(name)) return sampleCache.get(name);
+
+  const candidates = [new URL(`./public/${name}`, document.baseURI), new URL(`/${name}`, location.origin)];
+  for (const url of candidates) {
+    try {
+      const res = await fetch(url);
+      // A static server answers a missing file with an HTML 404 page, so check
+      // the status rather than trusting that we got bytes back.
+      if (!res.ok) continue;
+      const blob = await res.blob();
+      sampleCache.set(name, blob);
+      return blob;
+    } catch {
+      // Try the next candidate.
+    }
+  }
+  throw new Error(
+    `Could not find ${name}. Generate the samples first, or serve the repository root.`,
+  );
+}
+
 // ---- tiny logging helper --------------------------------------------------
 
 function logger(id) {
@@ -205,8 +235,7 @@ async function runRemux(file, label) {
 }
 
 $("remuxSample").addEventListener("click", async () => {
-  const res = await fetch("/sample.mp4");
-  const blob = await res.blob();
+  const blob = await fetchSample("sample.mp4");
   await runRemux(new File([blob], "sample.mp4", { type: "video/mp4" }), "generated sample");
 });
 
@@ -365,7 +394,7 @@ async function runAudio(file, label) {
 }
 
 $("audioRun").addEventListener("click", async () => {
-  const blob = await (await fetch("/sample-audio.mp4")).blob();
+  const blob = await fetchSample("sample-audio.mp4");
   await runAudio(new File([blob], "sample-audio.mp4", { type: "video/mp4" }), "generated sample with audio");
 });
 
@@ -467,7 +496,7 @@ $("queueRun").addEventListener("click", async () => {
   button.disabled = true;
   $("queueProg").hidden = false;
 
-  const sample = await (await fetch("/sample.mp4")).blob();
+  const sample = await fetchSample("sample.mp4");
   const good1 = new File([sample], "holiday.mp4", { type: "video/mp4" });
   const good2 = new File([sample], "wedding.mp4", { type: "video/mp4" });
   const bad = new File([new Uint8Array(4096).fill(7)], "corrupt.mp4", { type: "video/mp4" });
@@ -516,7 +545,7 @@ $("resumeRun").addEventListener("click", async () => {
   const button = $("resumeRun");
   button.disabled = true;
 
-  const sample = await (await fetch("/sample.mp4")).blob();
+  const sample = await fetchSample("sample.mp4");
   const file = new File([sample], "long-video.mp4", { type: "video/mp4", lastModified: 1700000000000 });
   const store = await JobStore.open();
 
@@ -597,7 +626,7 @@ $("resumeClear").addEventListener("click", async () => {
 
 $("adapterRun").addEventListener("click", async () => {
   const log = logger("adapterOut");
-  const sample = await (await fetch("/sample.mp4")).blob();
+  const sample = await fetchSample("sample.mp4");
   const file = new File([sample], "clip.mp4", { type: "video/mp4" });
 
   log.head("what your upload adapter receives");
@@ -647,7 +676,7 @@ $("secRun").addEventListener("click", async () => {
   }
 
   log.head("2. hostile file names never reach storage keys");
-  const evilFile = new File([await (await fetch("/sample.mp4")).blob()], "../../../etc/passwd.mp4", {
+  const evilFile = new File([await fetchSample("sample.mp4")], "../../../etc/passwd.mp4", {
     type: "video/mp4",
   });
   const names = [];
