@@ -207,6 +207,29 @@
       </section>
     </main>
 
+    <!--
+      Opening this file directly (file://) skips the dev server, and the browser
+      then cannot resolve the bare "bitrate-js" import. Say so plainly rather
+      than leaving a bare module-resolution error in the console.
+    -->
+    <script>
+      if (location.protocol === "file:") {
+        document.body.innerHTML = `
+          <main>
+            <h1>bitrate</h1>
+            <section>
+              <h2 style="color:#f85149">Open this through the dev server</h2>
+              <p class="hint">
+                You opened <code>index.html</code> from disk. Browsers cannot resolve a bare
+                import like <code>"bitrate-js"</code> on their own — the dev server rewrites it.
+              </p>
+              <p class="hint">Run this from the repository root, then open the URL it prints:</p>
+              <pre style="background:#0d0f14;border:1px solid #272d3a;border-radius:6px;padding:0.75rem">npm run dev --prefix examples/demo</pre>
+              <p class="hint">Usually <a href="http://localhost:5178" style="color:#4f8cff">http://localhost:5178</a>.</p>
+            </section>
+          </main>`;
+      }
+    </script>
     <script type="module" src="./main.js"></script>
   </body>
 </html>

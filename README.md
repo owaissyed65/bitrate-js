@@ -176,6 +176,38 @@ const { remux, transcode, reasons } = isSupported();
 The WASM module is **inlined into the bundle**, so there is no `.wasm` asset to copy and no
 bundler configuration — `npm install` is enough.
 
+### Using it without a bundler
+
+The package is a single ESM file, so it works from a plain `<script type="module">`. A
+browser cannot resolve a bare name like `"bitrate-js"` on its own, so declare it in an
+**import map**:
+
+```html
+<script type="importmap">
+  { "imports": { "bitrate-js": "/node_modules/bitrate-js/dist/index.js" } }
+</script>
+
+<script type="module">
+  import { remux, isSupported } from "bitrate-js";
+  // …
+</script>
+```
+
+Or skip the import map and use the path directly:
+
+```html
+<script type="module">
+  import { remux } from "/node_modules/bitrate-js/dist/index.js";
+</script>
+```
+
+> **`Failed to resolve module specifier "bitrate-js"`** means neither is in place — the page
+> is being served without a bundler and without an import map. It also appears if you open
+> an HTML file straight from disk (`file://`) instead of through a server.
+
+A runnable example is in [`examples/no-bundler`](examples/no-bundler/index.html); serve the
+repository root and open `/examples/no-bundler/`.
+
 ## Development
 
 Requires **Rust + wasm-pack** and **Node 18+**. Rust is needed only to *build* the package;
