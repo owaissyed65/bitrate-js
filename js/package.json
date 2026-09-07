@@ -52,11 +52,10 @@
   ],
   "scripts": {
     "build:wasm": "wasm-pack build ../crates/bitrate-core --target web --out-dir ../../js/src/wasm --out-name bitrate_core && node scripts/inline-wasm.mjs",
-    "build": "npm run build:wasm && tsup && node scripts/build-standalone.mjs",
+    "build": "npm run build:wasm && tsup",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "prepublishOnly": "npm run build && npm run test",
-    "build:standalone": "node scripts/build-standalone.mjs"
+    "prepublishOnly": "npm run build && npm run test"
   },
   "peerDependencies": {
     "@aws-sdk/client-s3": ">=3",

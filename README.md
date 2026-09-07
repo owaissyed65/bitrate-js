@@ -57,23 +57,18 @@ rewriting.
 
 ---
 
-## Try it in 10 seconds
+## Try it
 
-Open **[`examples/standalone/bitrate.html`](examples/standalone/bitrate.html)** by
-double-clicking it. One file, no server, no install — the library and its WASM are inlined,
-so it runs straight from disk. Pick a video and watch it become HLS.
-
-Rebuild it with `npm run build` in `js/`.
-
-For a visual tour — segment timeline, player with quality switching, live job cards —
-run the React showcase:
+A React showcase runs every feature in the browser: a segment timeline you can click to
+seek, a player with quality switching, live job cards, and security checks run against
+the library itself.
 
 ```bash
+npm run build --prefix js
 npm install --prefix examples/react-app && npm run dev --prefix examples/react-app
 ```
 
-There is also a dependency-free version at [`examples/demo`](examples/demo/), which runs on
-any static server.
+Then open http://localhost:5180.
 
 ---
 
@@ -277,9 +272,6 @@ over `file://`, so this is what a page opened straight from disk needs:
 > is being served without a bundler and without an import map. It also appears if you open
 > an HTML file straight from disk (`file://`) instead of through a server.
 
-A runnable example is in [`examples/no-bundler`](examples/no-bundler/index.html); serve the
-repository root and open `/examples/no-bundler/`.
-
 ## Development
 
 Requires **Rust + wasm-pack** and **Node 18+**. Rust is needed only to *build* the package;
@@ -302,17 +294,11 @@ cd js && npm install && npm run build && npm test
 cargo test && cargo clippy --all-targets
 ```
 
-Run the demo. It declares an import map, so **any static server works** — Vite, VS Code
-Live Server, `npx serve`, `python -m http.server`. Build the package first, since the demo
-loads `js/dist`:
+Run the showcase:
 
 ```bash
-npm install --prefix examples/demo && npm run dev --prefix examples/demo
+npm install --prefix examples/react-app && npm run dev --prefix examples/react-app
 ```
-
-Serving the repository root works too — open `/examples/demo/`. The one thing that does
-*not* work is opening `index.html` straight from disk: over `file://` there is no server to
-load the modules from, and the page will tell you so.
 
 ## License
 

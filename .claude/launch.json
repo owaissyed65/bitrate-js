@@ -2,32 +2,6 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "demo",
-      "runtimeExecutable": "npm",
-      "runtimeArgs": [
-        "run",
-        "dev",
-        "--prefix",
-        "examples/demo",
-        "--",
-        "--port",
-        "5178"
-      ],
-      "port": 5178
-    },
-    {
-      "name": "static",
-      "runtimeExecutable": "npx",
-      "runtimeArgs": [
-        "--yes",
-        "serve",
-        "-l",
-        "5179",
-        "."
-      ],
-      "port": 5179
-    },
-    {
       "name": "react",
       "runtimeExecutable": "npm",
       "runtimeArgs": [

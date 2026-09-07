@@ -270,7 +270,7 @@ bitrate/
 │   │   ├── storage.ts       # IndexedDB: job state, pending segments, resume
 │   │   └── worker.ts
 │   └── package.json
-├── examples/demo/           # Vite app: pick file → package → play with hls.js
+├── examples/react-app/      # React showcase: package, play, queue, resume, upload
 ├── PLAN.md
 └── README.md
 ```
