@@ -464,6 +464,15 @@ interface RungPipeline {
   /** Output waiting to be yielded to the caller. */
   pending: OutputFile[];
   error?: Error;
+  /**
+   * The codec string the encoder was actually configured with.
+   *
+   * The master playlist has to advertise this rather than a fixed value: a
+   * player reads CODECS to decide whether it can play a variant at all, and
+   * claiming Baseline 3.0 for a 1080p rung describes something that cannot
+   * exist. Set once the encoder is configured.
+   */
+  codec?: string;
   /** The re-encoded audio track description, when there is audio. */
   audioSampleEntry: Uint8Array | null;
   /** The audio track timescale, which is its sample rate. */
@@ -590,6 +599,12 @@ export async function* transcode(
           );
           while (audioPipeline.busy) {
             signal?.throwIfAborted();
+            // Same hazard as the video backpressure loop: a decoder that has
+            // failed is closed and will never drain, so the wait has to end on
+            // the error rather than spin on a queue that cannot move. This loop
+            // runs before any video work, so hanging here produces no output at
+            // all — the worst-looking failure of the three.
+            if (audioPipeline.error) throw audioPipeline.error;
             await new Promise((resolve) => setTimeout(resolve, 1));
           }
         }
@@ -615,6 +630,7 @@ export async function* transcode(
     }
     for (let i = 0; i < rungs.length; i++) {
       rungs[i]!.encoder.configure(configs[i]!);
+      rungs[i]!.codec = configs[i]!.codec;
     }
 
     // How much of the audio each rung has been given so far. The same frames go
@@ -806,6 +822,7 @@ export async function* packageFrames(
             const config = await resolveEncoderConfig(spec.width, spec.height, spec.bitrate, 30);
             const rung = createRung(prefix, spec, segmentDuration);
             rung.encoder.configure(config);
+            rung.codec = config.codec;
             rungs.push(rung);
           }
           configured = true;
@@ -1002,21 +1019,75 @@ function* drainRung(rung: RungPipeline): Generator<OutputFile> {
  * Without this the decoder outruns the encoders and queued frames grow without
  * bound — the failure mode that kills a tab on a long video.
  */
-async function applyBackpressure(rungs: RungPipeline[], signal?: AbortSignal): Promise<void> {
+/**
+ * The part of a rung backpressure needs, so the loop can be tested without a
+ * real `VideoEncoder` — which is the reason the hang above shipped: WebCodecs
+ * does not exist in Node, so nothing here was covered.
+ *
+ * @internal
+ */
+export interface BackpressureRung {
+  name: string;
+  width: number;
+  height: number;
+  bitrate: number;
+  error?: Error | undefined;
+  encoder: { encodeQueueSize: number; state: string };
+}
+
+/** @internal Exported for tests. */
+export async function applyBackpressure(
+  rungs: BackpressureRung[],
+  signal?: AbortSignal,
+): Promise<void> {
   while (rungs.some((r) => r.encoder.encodeQueueSize > MAX_QUEUED_FRAMES)) {
     signal?.throwIfAborted();
+
+    // A dead encoder never drains its queue, so waiting for it is waiting
+    // forever. WebCodecs reports the failure through the error callback and
+    // closes the codec; without this the whole job hangs with no error and no
+    // output, which is indistinguishable to a user from "it is still working".
+    for (const rung of rungs) {
+      if (rung.error) throw rung.error;
+      if (rung.encoder.state === "closed") {
+        throw new Error(
+          `The encoder for ${rung.name} closed while encoding. The browser likely rejected ` +
+            `${rung.width}x${rung.height} at ${Math.round(rung.bitrate / 1000)} kbps — ` +
+            `try a shorter ladder, such as LADDERS.single.`,
+        );
+      }
+    }
+
     await new Promise((resolve) => setTimeout(resolve, 1));
   }
 }
 
 /** Build the master playlist listing every rung. */
-function buildMaster(prefix: string, rungs: RungPipeline[]): string {
+/** What the master playlist needs from a rung. @internal */
+export interface MasterVariant {
+  bitrate: number;
+  width: number;
+  height: number;
+  codec?: string | undefined;
+  audioSampleEntry: Uint8Array | null;
+  segmenter?: { playlistName(): string } | undefined;
+}
+
+/** @internal Exported for tests. */
+export function buildMaster(prefix: string, rungs: MasterVariant[]): string {
   const lines = ["#EXTM3U", "#EXT-X-VERSION:7"];
   // Highest bandwidth first: players use the first entry as their initial pick.
   for (const rung of [...rungs].sort((a, b) => b.bitrate - a.bitrate)) {
     if (!rung.segmenter) continue;
+
+    // The rung's own codec string, not a fixed one. `mp4a.40.2` is AAC-LC,
+    // which is what the audio pipeline encodes; a variant carrying audio must
+    // declare it or a player may set up only a video track.
+    const codecs = [rung.codec ?? "avc1.4d401f"];
+    if (rung.audioSampleEntry) codecs.push("mp4a.40.2");
+
     lines.push(
-      `#EXT-X-STREAM-INF:BANDWIDTH=${rung.bitrate},RESOLUTION=${rung.width}x${rung.height},CODECS="avc1.42e01e"`,
+      `#EXT-X-STREAM-INF:BANDWIDTH=${rung.bitrate},RESOLUTION=${rung.width}x${rung.height},CODECS="${codecs.join(",")}"`,
       rung.segmenter.playlistName(),
     );
   }
