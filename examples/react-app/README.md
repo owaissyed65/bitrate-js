@@ -37,3 +37,8 @@ authenticated `Storage` instance rather than credentials precisely so that it ca
 
 For the upload to be allowed, the bucket needs Create permission for whichever identity you
 use — `Any`, or `Users` with the anonymous-session checkbox ticked.
+
+If the bucket has **File Security** enabled, each created file must also carry its own
+permissions, or Appwrite answers `No permissions provided for action 'create'`. Leave the
+**public read permission** box ticked: it passes `Permission.read(Role.any())`, which is
+also what playback needs, since a player has to fetch every segment.

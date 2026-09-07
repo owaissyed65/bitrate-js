@@ -1,4 +1,4 @@
-import { Account, Client, Storage } from "appwrite";
+import { Account, Client, Permission, Role, Storage } from "appwrite";
 import { HlsQueue } from "bitrate-js";
 import { appwriteAdapter } from "bitrate-js/adapters/appwrite";
 import { useEffect, useState } from "react";
@@ -84,6 +84,7 @@ export function AppwritePanel() {
   const [settings, setSettings] = useState<Settings>(EMPTY);
   const [file, setFile] = useState<File | null>(null);
   const [anonymous, setAnonymous] = useState(true);
+  const [publicRead, setPublicRead] = useState(true);
 
   const [running, setRunning] = useState(false);
   const [log, setLog] = useState<{ text: string; kind: "info" | "ok" | "err" }[]>([]);
@@ -169,11 +170,21 @@ export function AppwritePanel() {
       const storage = new Storage(client);
       const results: Uploaded[] = [];
 
+      // A bucket with File Security enabled rejects a create that carries no
+      // permissions. Public read is also what HLS needs: a player has to fetch
+      // every segment, so they must be readable by whoever is watching.
+      const permissions = publicRead ? [Permission.read(Role.any())] : undefined;
+      if (publicRead) say("files will be created with public read permission");
+
       const queue = new HlsQueue({
         segmentDuration: 6,
         retries: 2,
         // The adapter takes an authenticated Storage instance — never a key.
-        upload: appwriteAdapter({ storage, bucketId: settings.bucketId }),
+        upload: appwriteAdapter({
+          storage,
+          bucketId: settings.bucketId,
+          ...(permissions ? { permissions } : {}),
+        }),
         onJobDone: () => say("packaging and upload finished", "ok"),
         onJobError: ({ error }) => say(error.message, "err"),
       });
@@ -329,6 +340,18 @@ export function AppwritePanel() {
           </label>
           <span style={{ color: "var(--dim)", fontSize: "0.8rem" }}>
             needed unless the bucket allows guests
+          </span>
+
+          <label className="chip" style={{ cursor: "pointer" }}>
+            <input
+              type="checkbox"
+              checked={publicRead}
+              onChange={(e) => setPublicRead(e.target.checked)}
+            />
+            public read permission
+          </label>
+          <span style={{ color: "var(--dim)", fontSize: "0.8rem" }}>
+            required if the bucket has File Security on, and for playback
           </span>
         </div>
       </section>

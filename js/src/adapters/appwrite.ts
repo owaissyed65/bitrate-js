@@ -28,7 +28,18 @@ export interface AppwriteAdapterOptions {
   bucketId: string;
   /** Prefix folded into the generated file id. */
   prefix?: string;
-  /** Permissions applied to each created file. */
+  /**
+   * Permissions applied to each created file.
+   *
+   * Required when the bucket has **File Security** enabled — Appwrite then
+   * rejects a create that supplies none. HLS also needs the segments to be
+   * readable by whoever plays them, so a typical value is:
+   *
+   * ```ts
+   * import { Permission, Role } from "appwrite";
+   * permissions: [Permission.read(Role.any())]
+   * ```
+   */
   permissions?: string[];
 }
 
@@ -100,7 +111,19 @@ export function appwriteAdapter(options: AppwriteAdapterOptions): UploadAdapter 
         code === 404 ||
         /not authorized|missing scope|Bucket with the requested ID could not be found/i.test(message);
 
-      const text = `Appwrite upload failed for "${item.name}" (id ${fileId}): ${message}`;
+      let text = `Appwrite upload failed for "${item.name}" (id ${fileId}): ${message}`;
+
+      // This one is opaque unless you know Appwrite's bucket settings, so say
+      // what to change rather than repeating the API's wording.
+      if (/no permissions provided/i.test(message) && !permissions) {
+        text +=
+          "\n\nThis bucket has File Security enabled, so each file needs explicit permissions. " +
+          "Pass them to appwriteAdapter, e.g. " +
+          "`permissions: [Permission.read(Role.any())]` (imported from 'appwrite') — " +
+          "segments must be readable by whoever plays them. " +
+          "Alternatively, turn File Security off and set bucket-level permissions instead.";
+      }
+
       throw permanent ? new PermanentUploadError(text, { cause: error }) : new Error(text, { cause: error });
     }
   };
