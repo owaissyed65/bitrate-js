@@ -13,3 +13,4 @@ coverage
 fuzz/artifacts
 fuzz/corpus
 js/src/wasm-inline.ts
+examples/demo/public/sample.mp4

@@ -287,15 +287,19 @@ Build: `wasm-pack build crates/bitrate-core` → JS wrapper imports the wasm →
 Reordered so **remux ships before transcode** — it is simpler, near-instant, works on more
 devices, and is independently useful.
 
+**Status: M0–M6 complete.** The pipeline works end-to-end and is verified in a real
+browser (canvas frames → WebCodecs H.264 → fMP4 → HLS → played back through hls.js, with a
+frame-accurate seek). Remaining: M7 robustness (Web Worker, audio) and M8 publishing.
+
 | # | Milestone | Deliverable | Proves |
 |---|---|---|---|
-| **M0** | Scaffold | Rust crate + `wasm-pack` + TS wrapper + Vite demo, "hello wasm" round-trip | Toolchain works end-to-end |
-| **M1** | Segmenter core | Rust: encoded H.264 samples → **fMP4 segments + single-rendition `.m3u8`** | The Rust muxer/manifest (our IP) |
-| **M2** | **Remux mode** ⭐ | Streaming demux of an existing MP4 → chunk → **playable, seekable HLS in hls.js**, no re-encode. Handles **1 GB** at flat memory. | The fast path + the streaming discipline |
-| **M3** | Queue + upload | **`HlsQueue`**: multiple files, `concurrency`, **skip-&-continue + retries**, `UploadAdapter` + **`s3Adapter` / `supabaseAdapter` / `appwriteAdapter`** presets, per-job events | The multi-file, upload-to-anywhere workflow |
-| **M4** | Resume (IndexedDB) | Job state + pending segments in IndexedDB, `FileSystemFileHandle` path + re-pick fallback, `persist()`/`estimate()`, auto-cleanup | Long jobs survive a closed tab |
-| **M5** | Transcode single rung | WebCodecs decode → re-encode @720p → feed M1 | Full transcode pipeline, one bitrate |
-| **M6** | ABR ladder | **Decode once, fan out to N encoders** → master.m3u8 + all renditions, quality switching, smart ladder (no upscaling) | The adaptive-bitrate feature |
+| **M0** ✅ | Scaffold | Rust crate + `wasm-pack` + TS wrapper + Vite demo, "hello wasm" round-trip | Toolchain works end-to-end |
+| **M1** ✅ | Segmenter core | Rust: encoded H.264 samples → **fMP4 segments + single-rendition `.m3u8`** | The Rust muxer/manifest (our IP) |
+| **M2** ✅ | **Remux mode** ⭐ | Streaming demux of an existing MP4 → chunk → **playable, seekable HLS in hls.js**, no re-encode. Handles **1 GB** at flat memory. | The fast path + the streaming discipline |
+| **M3** ✅ | Queue + upload | **`HlsQueue`**: multiple files, `concurrency`, **skip-&-continue + retries**, `UploadAdapter` + **`s3Adapter` / `supabaseAdapter` / `appwriteAdapter`** presets, per-job events | The multi-file, upload-to-anywhere workflow |
+| **M4** ✅ | Resume (IndexedDB) | Job state + pending segments in IndexedDB, `FileSystemFileHandle` path + re-pick fallback, `persist()`/`estimate()`, auto-cleanup | Long jobs survive a closed tab |
+| **M5** ✅ | Transcode single rung | WebCodecs decode → re-encode @720p → feed M1 | Full transcode pipeline, one bitrate |
+| **M6** ✅ | ABR ladder | **Decode once, fan out to N encoders** → master.m3u8 + all renditions, quality switching, smart ladder (no upscaling) | The adaptive-bitrate feature |
 | **M7** | Robustness | Web Worker, backpressure/memory watchdog, abort, audio track, hw-accel detection, ETA, multipart upload | Won't freeze/OOM on real batches |
 | **M8** | Package & DX | npm publish (ESM+types), `isSupported`, README, browser-support matrix, demo deploy | Others can actually use it |
 
