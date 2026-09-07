@@ -14,6 +14,8 @@ import { describe, expect, it } from "vitest";
 import {
   applyBackpressure,
   buildMaster,
+  syncSampleAtOrBefore,
+  yieldToEventLoop,
   type BackpressureRung,
   type MasterVariant,
 } from "./transcode.js";
@@ -128,5 +130,93 @@ describe("master playlist", () => {
     expect(master).toContain("BANDWIDTH=5000000");
     expect(master).toContain("RESOLUTION=1920x1080");
     expect(master.startsWith("#EXTM3U")).toBe(true);
+  });
+});
+
+describe("finding where a resumed transcode restarts decoding", () => {
+  // A 30 fps source at timescale 1000: one sample every 33.33 ms, with a sync
+  // sample every 30 (once a second), which is what a camera typically writes.
+  const timescale = 1000;
+  const samples = Array.from({ length: 300 }, (_, i) => ({
+    decodeTime: Math.round((i * timescale) / 30),
+    isSync: i % 30 === 0,
+  }));
+
+  it("starts at a sync sample, never mid-GOP", () => {
+    // Decoding from an inter frame yields garbage or an error, because it
+    // refers to frames that were never decoded.
+    for (const targetUs of [0, 500_000, 1_000_000, 3_400_000, 9_900_000]) {
+      const index = syncSampleAtOrBefore(samples, timescale, targetUs);
+      expect(samples[index]!.isSync, `target ${targetUs}`).toBe(true);
+    }
+  });
+
+  it("never starts after the target, which would drop real frames", () => {
+    const targetUs = 3_400_000;
+    const index = syncSampleAtOrBefore(samples, timescale, targetUs);
+    expect((samples[index]!.decodeTime / timescale) * 1_000_000).toBeLessThanOrEqual(targetUs);
+  });
+
+  it("picks the closest one, so the run-up stays short", () => {
+    // 3.4s should resume from the 3s keyframe, not the 1s one — the difference
+    // is wasted decoding on every resume.
+    const index = syncSampleAtOrBefore(samples, timescale, 3_400_000);
+    expect(index).toBe(90);
+  });
+
+  it("lands exactly on a keyframe when the target is one", () => {
+    expect(syncSampleAtOrBefore(samples, timescale, 2_000_000)).toBe(60);
+  });
+
+  it("starts at the beginning when nothing precedes the target", () => {
+    expect(syncSampleAtOrBefore(samples, timescale, 0)).toBe(0);
+  });
+
+  it("falls back to the start rather than failing on a source with no sync flags", () => {
+    const none = samples.map((s) => ({ ...s, isSync: false }));
+    expect(syncSampleAtOrBefore(none, timescale, 5_000_000)).toBe(0);
+  });
+
+  it("refuses to divide by a nonsense timescale", () => {
+    expect(syncSampleAtOrBefore(samples, 0, 5_000_000)).toBe(0);
+  });
+
+  it("handles a target past the end of the source", () => {
+    const index = syncSampleAtOrBefore(samples, timescale, 999_000_000);
+    expect(samples[index]!.isSync).toBe(true);
+    expect(index).toBe(270);
+  });
+});
+
+describe("yielding without a timer", () => {
+  it("returns control to the event loop", async () => {
+    let ran = false;
+    void Promise.resolve().then(() => (ran = true));
+    await yieldToEventLoop();
+    expect(ran).toBe(true);
+  });
+
+  it("does not use a timer, which a background tab throttles ~100x", async () => {
+    // Measured in a hidden tab: setTimeout(…, 1) takes about 100ms, so a wait
+    // loop built on it slows a transcode to a crawl the moment the user
+    // switches tab — indistinguishable from a hang.
+    const timers: number[] = [];
+    const realSetTimeout = globalThis.setTimeout;
+    globalThis.setTimeout = ((fn: () => void, ms?: number) => {
+      timers.push(ms ?? 0);
+      return realSetTimeout(fn, ms);
+    }) as typeof setTimeout;
+
+    try {
+      await yieldToEventLoop();
+      expect(timers).toEqual([]);
+    } finally {
+      globalThis.setTimeout = realSetTimeout;
+    }
+  });
+
+  it("resolves many times over without leaking ports", async () => {
+    for (let i = 0; i < 200; i++) await yieldToEventLoop();
+    expect(true).toBe(true);
   });
 });

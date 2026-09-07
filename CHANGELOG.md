@@ -29,8 +29,11 @@ real files, not only in tests.
 
 - Multi-file queue with concurrency, retries, progress, cancellation, and
   skip-and-continue so one bad file cannot sink a batch.
-- Resume after a closed tab, backed by IndexedDB; the re-picked file is verified against
-  the stored job before anything is reused.
+- Resume after a closed tab, backed by IndexedDB, in **both** modes; the re-picked file is
+  verified against the stored job before anything is reused. A re-encode restarts at a
+  segment boundary, decoding a short run-up from the preceding keyframe — every segment
+  begins on a keyframe and is decodable alone, so the join is exact rather than
+  approximate.
 - Adapters for pre-signed URLs, S3-compatible storage, Supabase and Appwrite. **No adapter
   accepts cloud credentials** — only an app-authenticated client or a short-lived signed
   URL. A test enforces it.
@@ -50,5 +53,6 @@ real files, not only in tests.
 
 - Transcoding runs on the main thread, so a long encode makes the tab unresponsive. A Web
   Worker is planned.
-- Resuming applies to `remux` only; a transcode job restarts from the beginning.
+- A resumed job must use the same mode and ladder it started with; the queue refuses a
+  mismatch rather than appending output that does not match what is already uploaded.
 - Sources must carry H.264 video in an MP4 container.

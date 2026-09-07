@@ -88,6 +88,51 @@ export interface TranscodeOptions {
    * renditions matters more than not wasting the work.
    */
   allowUpscale?: boolean;
+
+  /**
+   * Where a previous run stopped, so a closed tab does not cost the whole job.
+   *
+   * Resuming a re-encode is exact rather than approximate, because every
+   * segment is forced to start on a keyframe and an HLS segment is decodable on
+   * its own. Picking up at a segment boundary therefore produces the same
+   * stream an uninterrupted run would have — there is no seam, and the encoder
+   * losing its rate-control history across the join costs nothing a player can
+   * see.
+   */
+  resume?: TranscodeResumeState | undefined;
+
+  /**
+   * Called once every rung has finished the same segment, carrying what
+   * {@link TranscodeResumeState} needs to restart there.
+   *
+   * It fires only when *all* rungs have produced the segment, so a checkpoint
+   * never claims a rendition that does not exist.
+   */
+  onSegment?:
+    | ((info: {
+        index: number;
+        duration: number;
+        samplesProcessed: number;
+        audioSamplesProcessed: number;
+        resumeAtMicros: number;
+      }) => void)
+    | undefined;
+}
+
+/** Where a previous transcode stopped. */
+export interface TranscodeResumeState {
+  /** Durations of already-produced segments, in index order. */
+  completedSegmentDurations: readonly number[];
+  /**
+   * Timestamp of the keyframe that begins the next segment, in microseconds.
+   *
+   * Recorded rather than derived by summing durations: decoding has to restart
+   * at a source sync sample, and an accumulated-rounding estimate would land
+   * near the boundary instead of on it.
+   */
+  resumeAtMicros: number;
+  /** How many re-encoded audio frames those segments consumed. */
+  audioSamplesProcessed?: number;
 }
 
 /**
@@ -512,6 +557,8 @@ export async function* transcode(
     hardwareAcceleration,
     latencyMode,
     allowUpscale = false,
+    resume,
+    onSegment,
   } = options;
 
   await ensureWasm();
@@ -605,7 +652,7 @@ export async function* transcode(
             // runs before any video work, so hanging here produces no output at
             // all — the worst-looking failure of the three.
             if (audioPipeline.error) throw audioPipeline.error;
-            await new Promise((resolve) => setTimeout(resolve, 1));
+            await yieldToEventLoop();
           }
         }
         await audioPipeline.flush();
@@ -625,8 +672,26 @@ export async function* transcode(
     const audioEntry = audioPipeline?.sampleEntry ?? null;
     const outputAudioRate = audioPipeline?.sampleRate ?? 0;
 
+    // Skip exactly the audio the earlier run consumed. The count is recorded at
+    // checkpoint time rather than inferred from elapsed video time: the two
+    // tracks advance at different rates, so an estimate drops or duplicates a
+    // frame right at the join.
+    const audioSkipped = Math.min(
+      Math.max(resume?.audioSamplesProcessed ?? 0, 0),
+      audioTrack.length,
+    );
+    const audioTicksSkipped = audioTrack
+      .slice(0, audioSkipped)
+      .reduce((total, frame) => total + frame.duration, 0);
+
+    const restore = resume
+      ? { segmentDurations: resume.completedSegmentDurations, audioTicks: audioTicksSkipped }
+      : null;
+
     for (const rung of plan) {
-      rungs.push(createRung(prefix, rung, segmentDuration, audioEntry, outputAudioRate));
+      rungs.push(
+        createRung(prefix, rung, segmentDuration, audioEntry, outputAudioRate, restore),
+      );
     }
     for (let i = 0; i < rungs.length; i++) {
       rungs[i]!.encoder.configure(configs[i]!);
@@ -635,7 +700,7 @@ export async function* transcode(
 
     // How much of the audio each rung has been given so far. The same frames go
     // to every rendition — re-encoding identical audio per rung is pure waste.
-    let audioPushed = 0;
+    let audioPushed = audioSkipped;
 
     /** Give every rung the audio up to `seconds`. */
     const advanceAudio = (seconds: number) => {
@@ -657,14 +722,61 @@ export async function* transcode(
 
     const decoder = createDecoder(sourceConfig, sourceWidth, sourceHeight);
 
-    let processed = 0;
+    const resumeAtUs = resume?.resumeAtMicros ?? 0;
+
+    // Decoding cannot simply start at the resume point: an inter frame is
+    // meaningless without the frames it references. Restart at the last sync
+    // sample at or before it and discard what comes out early — a few hundred
+    // milliseconds of wasted decode against re-encoding the whole file.
+    const startIndex = resumeAtUs > 0 ? syncSampleAtOrBefore(samples, sourceTimescale, resumeAtUs) : 0;
+    const samplesForRun = startIndex > 0 ? samples.slice(startIndex) : samples;
+
+    // Progress is still reported against the whole source, so a resumed job
+    // shows the bar where the user left it rather than back at zero.
+    let processed = startIndex;
     let lastKeyframeUs = -Infinity;
     const segmentUs = segmentDuration * 1_000_000;
+
+    /**
+     * When each forced keyframe happened. Segment N begins at keyframe N, so
+     * the point to restart from after finishing segment N is keyframe N+1 —
+     * which, since a segment is closed by the keyframe that opens the next one,
+     * has always been seen by the time that segment completes.
+     */
+    const keyframeUs: number[] = resume ? [...resume.completedSegmentDurations].map(() => 0) : [];
+
+    /** Segments finished by each rung, so a checkpoint waits for the slowest. */
+    const finished = rungs.map(() => new Map<number, number>());
+    let checkpointed = (resume?.completedSegmentDurations.length ?? 0) - 1;
+
+    /** Emit a checkpoint for every segment now complete across all rungs. */
+    const checkpoint = () => {
+      if (!onSegment) return;
+      for (;;) {
+        const next = checkpointed + 1;
+        const durations = finished.map((m) => m.get(next));
+        if (durations.some((d) => d === undefined)) return;
+
+        // The keyframe that opens the following segment is where a resumed run
+        // restarts. Without it there is nothing safe to record yet.
+        const restartUs = keyframeUs[next + 1];
+        if (restartUs === undefined) return;
+
+        checkpointed = next;
+        onSegment({
+          index: next,
+          duration: durations[0]!,
+          samplesProcessed: processed,
+          audioSamplesProcessed: audioPushed,
+          resumeAtMicros: restartUs,
+        });
+      }
+    };
 
     const frames: VideoFrame[] = [];
     decoder.decoder.ondequeue = null;
 
-    for await (const item of readSamples(file, samples, { readWindow, signal })) {
+    for await (const item of readSamples(file, samplesForRun, { readWindow, signal })) {
       signal?.throwIfAborted();
       // `readSamples` returns the element type it was given, so the decode time
       // travels with each sample.
@@ -684,8 +796,19 @@ export async function* transcode(
       // Hand every decoded frame to each encoder, then release it. A VideoFrame
       // holds GPU/system memory and is not garbage collected.
       for (const frame of decoder.take()) {
+        // Frames decoded only to reach the resume point are not part of the
+        // output. Closing them here is not optional: a VideoFrame holds
+        // GPU/system memory that garbage collection will not reclaim.
+        if (frame.timestamp < resumeAtUs) {
+          frame.close();
+          continue;
+        }
+
         const forceKey = frame.timestamp - lastKeyframeUs >= segmentUs;
-        if (forceKey) lastKeyframeUs = frame.timestamp;
+        if (forceKey) {
+          lastKeyframeUs = frame.timestamp;
+          keyframeUs.push(frame.timestamp);
+        }
 
         for (const rung of rungs) {
           rung.encoder.encode(frame, { keyFrame: forceKey });
@@ -696,7 +819,13 @@ export async function* transcode(
         frame.close();
 
         processed++;
-        for (const rung of rungs) yield* drainRung(rung);
+        for (let i = 0; i < rungs.length; i++) {
+          yield* drainRung(rungs[i]!, finished[i]!);
+        }
+        // Everything yielded above has been consumed — and, in the queue,
+        // uploaded — by the time control returns here, so a checkpoint written
+        // now cannot claim a segment that never landed.
+        checkpoint();
 
         await applyBackpressure(rungs, signal);
         if (onProgress && processed % 50 === 0) {
@@ -709,6 +838,12 @@ export async function* transcode(
     await decoder.decoder.flush();
     if (decoder.failure) throw decoder.failure;
     for (const frame of decoder.take()) {
+      // The same guard as the main loop: on a resumed run the decoder's tail
+      // can still hold frames from before the restart point.
+      if (frame.timestamp < resumeAtUs) {
+        frame.close();
+        continue;
+      }
       for (const rung of rungs) rung.encoder.encode(frame, { keyFrame: false });
       frame.close();
     }
@@ -896,6 +1031,7 @@ function createRung(
   segmentDuration: number,
   audioSampleEntry: Uint8Array | null = null,
   audioTimescale = 0,
+  restore: { segmentDurations: readonly number[]; audioTicks: number } | null = null,
 ): RungPipeline {
   const rung: RungPipeline = {
     name: `${prefix}_${spec.height}p`,
@@ -930,6 +1066,20 @@ function createRung(
         if (rung.audioSampleEntry && rung.audioTimescale > 0) {
           rung.segmenter.setAudio(rung.audioTimescale, rung.audioSampleEntry);
         }
+
+        // Replaying an earlier run has to happen here and nowhere else: the
+        // segmenter cannot exist before the encoder reports its avcC, and Rust
+        // refuses a restore once any sample has been pushed — and the push for
+        // this very chunk is a few lines below.
+        if (restore) {
+          for (const duration of restore.segmentDurations) {
+            rung.segmenter.restoreSegment(duration);
+          }
+          if (restore.audioTicks > 0 && rung.audioSampleEntry) {
+            rung.segmenter.restoreAudioTime(restore.audioTicks);
+          }
+        }
+
         rung.pending.push({
           name: rung.segmenter.initName(),
           blob: new Blob([rung.segmenter.initSegment() as BlobPart], { type: MIME_SEGMENT }),
@@ -989,7 +1139,11 @@ function createDecoder(codecConfig: Uint8Array, width: number, height: number) {
 }
 
 /** Yield any output a rung has ready, surfacing encoder errors. */
-function* drainRung(rung: RungPipeline): Generator<OutputFile> {
+function* drainRung(
+  rung: RungPipeline,
+  /** Records `index -> duration` for each segment drained, for checkpointing. */
+  finished?: Map<number, number>,
+): Generator<OutputFile> {
   if (rung.error) throw rung.error;
 
   yield* rung.pending.splice(0, rung.pending.length);
@@ -1000,6 +1154,7 @@ function* drainRung(rung: RungPipeline): Generator<OutputFile> {
   for (;;) {
     const segment = segmenter.takeSegment();
     if (!segment) return;
+    finished?.set(segment.index, segment.duration);
     try {
       yield {
         name: segmenter.segmentName(segment.index),
@@ -1019,6 +1174,33 @@ function* drainRung(rung: RungPipeline): Generator<OutputFile> {
  * Without this the decoder outruns the encoders and queued frames grow without
  * bound — the failure mode that kills a tab on a long video.
  */
+/**
+ * Yield to the event loop without going through a timer.
+ *
+ * `setTimeout(…, 1)` is clamped hard in a background tab — measured at 100ms
+ * per call in a hidden one, so a loop that waits this way runs a hundred times
+ * slower the moment the user switches tab, and a transcode that should take a
+ * minute appears to have frozen. A `MessageChannel` message is a macrotask that
+ * background throttling does not touch, so the encoder still gets its callbacks
+ * at full speed while the user is looking at something else.
+ *
+ * @internal Exported for tests.
+ */
+export function yieldToEventLoop(): Promise<void> {
+  if (typeof MessageChannel !== "function") {
+    return new Promise((resolve) => setTimeout(resolve, 1));
+  }
+  return new Promise((resolve) => {
+    const channel = new MessageChannel();
+    channel.port1.onmessage = () => {
+      channel.port1.close();
+      channel.port2.close();
+      resolve();
+    };
+    channel.port2.postMessage(undefined);
+  });
+}
+
 /**
  * The part of a rung backpressure needs, so the loop can be tested without a
  * real `VideoEncoder` — which is the reason the hang above shipped: WebCodecs
@@ -1058,7 +1240,7 @@ export async function applyBackpressure(
       }
     }
 
-    await new Promise((resolve) => setTimeout(resolve, 1));
+    await yieldToEventLoop();
   }
 }
 
@@ -1093,6 +1275,33 @@ export function buildMaster(prefix: string, rungs: MasterVariant[]): string {
   }
   void prefix;
   return `${lines.join("\n")}\n`;
+}
+
+/**
+ * The last sync sample at or before `targetUs`, as an index into `samples`.
+ *
+ * Decoding has to begin at a sync sample: an inter frame refers to frames
+ * before it, so starting anywhere else produces either an error or garbage.
+ * Returns 0 when the source declares no sync sample before the target, which
+ * costs a longer run-up rather than a broken one.
+ *
+ * @internal Exported for tests.
+ */
+export function syncSampleAtOrBefore(
+  samples: readonly { decodeTime: number; isSync: boolean }[],
+  timescale: number,
+  targetUs: number,
+): number {
+  if (timescale <= 0) return 0;
+
+  let found = 0;
+  for (let i = 0; i < samples.length; i++) {
+    const sample = samples[i]!;
+    const sampleUs = (sample.decodeTime / timescale) * 1_000_000;
+    if (sampleUs > targetUs) break;
+    if (sample.isSync) found = i;
+  }
+  return found;
 }
 
 /** Sample locations, with decode times accumulated for WebCodecs timestamps. */

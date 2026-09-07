@@ -24,8 +24,20 @@ export interface StoredJob {
   fileName: string;
   fileSize: number;
   lastModified: number;
-  /** Options needed to resume identically. */
-  settings: { prefix: string; segmentDuration: number };
+  /**
+   * Options needed to resume identically.
+   *
+   * `mode` and `ladder` are recorded, not assumed: resuming a transcode into a
+   * remux queue — or into a different set of rungs — would append segments that
+   * do not match the ones already uploaded, and the playlist would describe a
+   * stream no player can follow.
+   */
+  settings: {
+    prefix: string;
+    segmentDuration: number;
+    mode?: "remux" | "transcode" | "auto";
+    ladder?: { height: number; bitrate: number }[];
+  };
   status: "processing" | "done" | "failed";
   /** Index of the last segment fully produced; resume starts after this. */
   lastCompletedSegment: number;
@@ -35,6 +47,14 @@ export interface StoredJob {
    * advance at different rates, so a time-based estimate would drop or
    * duplicate a frame at the resume point. */
   audioSamplesProcessed?: number;
+  /**
+   * Where a resumed **transcode** restarts decoding, in microseconds.
+   *
+   * Remux restarts at a sample index, because it copies samples. A re-encode
+   * cannot: it has to restart at a keyframe on the output timeline and decode a
+   * short run-up to reach it, so the boundary is carried as a timestamp.
+   */
+  resumeAtMicros?: number;
   /**
    * Duration of each completed segment, in order.
    *

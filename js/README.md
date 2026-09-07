@@ -35,7 +35,9 @@ user picks files ─▶ QUEUE ─▶ chunk / encode ABR ladder ─▶ HLS ─▶
   instead of downloading whole.
 - **Adaptive bitrate** — multiple quality rungs so players adapt to network speed.
 - **Multi-file queue** with progress, retries, and skip-and-continue on failure.
-- **Resumes after a closed tab** via IndexedDB — no redoing a 40-minute job.
+- **Resumes after a closed tab** via IndexedDB, in both modes — no redoing a 40-minute
+  job. A re-encode picks up at a segment boundary, which is exact: every segment starts on
+  a keyframe and decodes on its own, so the join is seamless.
 - **Keeps the audio** — the source audio track is carried through untouched and muxed
   alongside the video, with both timelines kept in step.
 - **Uploads anywhere** through a pluggable adapter.
@@ -227,6 +229,15 @@ if (interrupted) {
   await q.drain();
 }
 ```
+
+Works for `transcode` as well as `remux`. The queue you resume into must use the **same
+mode and ladder** the job started with — `stored.settings` records both, and `addResume`
+refuses a mismatch rather than appending renditions that do not match the segments already
+uploaded.
+
+A resumed re-encode decodes a short run-up from the keyframe before the restart point,
+since an inter frame cannot be decoded on its own. That costs a second or two of work, not
+a re-run of the job.
 
 ---
 

@@ -452,3 +452,88 @@ describe("resume through the queue (the real user scenario)", () => {
     store.close();
   });
 });
+
+describe("resuming under changed settings", () => {
+  // The queue refuses "transcode" without WebCodecs, which Node lacks. Only the
+  // constructor guard cares, and these tests never encode anything.
+  beforeAll(() => {
+    globalThis.VideoEncoder ??= class {} as never;
+    globalThis.VideoDecoder ??= class {} as never;
+  });
+
+  /** A checkpoint as the queue would have written it. */
+  function checkpoint(over: Record<string, unknown> = {}) {
+    return {
+      jobId: "job_x",
+      fileName: "clip.mp4",
+      fileSize: 99,
+      lastModified: 1,
+      settings: { prefix: "job_x", segmentDuration: 6, mode: "transcode" as const },
+      status: "processing" as const,
+      lastCompletedSegment: 2,
+      samplesProcessed: 90,
+      completedSegmentDurations: [6, 6, 6],
+      resumeAtMicros: 18_000_000,
+      createdAt: 0,
+      updatedAt: 0,
+      ...over,
+    };
+  }
+
+  const sameFile = () => new File([new Uint8Array(99)], "clip.mp4", { lastModified: 1 });
+
+  it("refuses to continue a transcode as a remux", async () => {
+    const store = await JobStore.open(`queue-mode-${Date.now()}`);
+    const q = new HlsQueue({ store, mode: "remux" });
+
+    // The already-uploaded segments were re-encoded; appending copied ones
+    // produces a playlist describing a stream that does not exist.
+    expect(() => q.addResume({ stored: checkpoint(), file: sameFile() })).toThrow(
+      /"transcode" mode but the queue is in "remux" mode/,
+    );
+    store.close();
+  });
+
+  it("refuses to continue with a different ladder", async () => {
+    const store = await JobStore.open(`queue-ladder-${Date.now()}`);
+    const stored = checkpoint({
+      settings: {
+        prefix: "job_x",
+        segmentDuration: 6,
+        mode: "transcode" as const,
+        ladder: [{ height: 1080, bitrate: 5_000_000 }],
+      },
+    });
+
+    const q = new HlsQueue({
+      store,
+      mode: "transcode",
+      ladder: [{ height: 480, bitrate: 1_200_000 }],
+    });
+
+    expect(() => q.addResume({ stored, file: sameFile() })).toThrow(/different ladder/);
+    store.close();
+  });
+
+  it("accepts a resume that keeps the same mode and ladder", async () => {
+    const store = await JobStore.open(`queue-same-${Date.now()}`);
+    const ladder = [{ height: 480, bitrate: 1_200_000 }];
+    const stored = checkpoint({
+      settings: { prefix: "job_x", segmentDuration: 6, mode: "transcode" as const, ladder },
+    });
+
+    const q = new HlsQueue({ store, mode: "transcode", ladder });
+    expect(q.addResume({ stored, file: sameFile() })).toBe("job_x");
+    store.close();
+  });
+
+  it("treats a checkpoint written before modes were recorded as a remux", async () => {
+    const store = await JobStore.open(`queue-legacy-${Date.now()}`);
+    const stored = checkpoint({ settings: { prefix: "job_x", segmentDuration: 6 } });
+
+    // Older records carry no mode, and every one of them was a remux.
+    const q = new HlsQueue({ store, mode: "remux" });
+    expect(q.addResume({ stored, file: sameFile() })).toBe("job_x");
+    store.close();
+  });
+});

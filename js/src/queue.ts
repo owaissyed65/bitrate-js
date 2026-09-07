@@ -101,7 +101,22 @@ interface InternalJob extends QueueJob {
   prefix: string;
   produced: string[];
   /** Durations of segments already completed, for a resumed run. */
-  resume?: ResumeState;
+  resume?: ResumeState & { resumeAtMicros?: number };
+}
+
+/** Everything a stored checkpoint needs to restart a job exactly. */
+interface Checkpoint {
+  durations: number[];
+  samplesProcessed: number;
+  audioSamplesProcessed: number;
+  /** Transcode only — where to restart decoding on the output timeline. */
+  resumeAtMicros?: number;
+}
+
+/** A comparable description of a ladder, or `null` when there is nothing to compare. */
+function ladderKey(ladder?: { height: number; bitrate: number }[]): string | null {
+  if (!ladder || ladder.length === 0) return null;
+  return ladder.map((r) => `${r.height}@${r.bitrate}`).join(",");
 }
 
 /** Monotonic counter making job ids unique within a queue. */
@@ -189,6 +204,27 @@ export class HlsQueue {
       );
     }
 
+    // Continuing a job under different settings appends output that does not
+    // match what is already uploaded, and the playlist ends up describing a
+    // stream no player can follow. Refuse with the mismatch named rather than
+    // producing something subtly broken.
+    const storedMode = stored.settings.mode ?? "remux";
+    const mode = this.#options.mode ?? "auto";
+    if (storedMode !== mode) {
+      throw new Error(
+        `This job was started in "${storedMode}" mode but the queue is in "${mode}" mode. Resume it with the same mode, or start it again from the beginning.`,
+      );
+    }
+    if (mode === "transcode") {
+      const before = ladderKey(stored.settings.ladder);
+      const now = ladderKey(this.#options.ladder);
+      if (before && now && before !== now) {
+        throw new Error(
+          "This job was started with a different ladder. Resume it with the same rungs, or start it again from the beginning.",
+        );
+      }
+    }
+
     this.#jobs.push({
       id: stored.jobId,
       fileName: stored.fileName,
@@ -203,6 +239,9 @@ export class HlsQueue {
         completedSegmentDurations: stored.completedSegmentDurations ?? [],
         samplesProcessed: stored.samplesProcessed,
         audioSamplesProcessed: stored.audioSamplesProcessed ?? 0,
+        ...(stored.resumeAtMicros !== undefined
+          ? { resumeAtMicros: stored.resumeAtMicros }
+          : {}),
       },
     });
     return stored.jobId;
@@ -285,9 +324,14 @@ export class HlsQueue {
     await store?.putJob(
       this.#snapshot(
         job,
-        durations,
-        job.resume?.samplesProcessed ?? 0,
-        job.resume?.audioSamplesProcessed ?? 0,
+        {
+          durations,
+          samplesProcessed: job.resume?.samplesProcessed ?? 0,
+          audioSamplesProcessed: job.resume?.audioSamplesProcessed ?? 0,
+          ...(job.resume?.resumeAtMicros !== undefined
+            ? { resumeAtMicros: job.resume.resumeAtMicros }
+            : {}),
+        },
         "processing",
       ),
     );
@@ -305,12 +349,8 @@ export class HlsQueue {
     if (job.resume) remuxOptions.resume = job.resume;
 
     // Checkpointing is driven by onSegment rather than by the output loop:
-    // it reports exactly the sample count a later resume must restart from.
-    let pendingCheckpoint: {
-      durations: number[];
-      samplesProcessed: number;
-      audioSamplesProcessed: number;
-    } | null = null;
+    // it reports exactly the point a later resume must restart from.
+    let pendingCheckpoint: Checkpoint | null = null;
     if (store) {
       remuxOptions.onSegment = ({ duration, samplesProcessed, audioSamplesProcessed }) => {
         durations.push(duration);
@@ -319,11 +359,6 @@ export class HlsQueue {
     }
 
     const transcoding = this.#options.mode === "transcode";
-    if (transcoding && job.resume) {
-      // Resume checkpoints record where in the *source* to restart, which only
-      // means anything when frames are copied rather than re-encoded.
-      throw new Error("Resuming a transcode is not supported; re-run the job from the start.");
-    }
 
     const transcodeOptions: TranscodeOptions = {
       prefix: job.prefix,
@@ -350,6 +385,34 @@ export class HlsQueue {
       transcodeOptions.readWindow = this.#options.readWindow;
     }
 
+    // A re-encode restarts at a keyframe on the output timeline rather than at
+    // a source sample index, so it carries a timestamp instead. Every segment
+    // begins on a keyframe and is decodable alone, so the join is exact — the
+    // resumed run produces the stream an uninterrupted one would have.
+    if (transcoding && job.resume) {
+      transcodeOptions.resume = {
+        completedSegmentDurations: job.resume.completedSegmentDurations,
+        resumeAtMicros: job.resume.resumeAtMicros ?? 0,
+        audioSamplesProcessed: job.resume.audioSamplesProcessed ?? 0,
+      };
+    }
+    if (store) {
+      transcodeOptions.onSegment = ({
+        duration,
+        samplesProcessed,
+        audioSamplesProcessed,
+        resumeAtMicros,
+      }) => {
+        durations.push(duration);
+        pendingCheckpoint = {
+          durations: [...durations],
+          samplesProcessed,
+          audioSamplesProcessed,
+          resumeAtMicros,
+        };
+      };
+    }
+
     const stream = transcoding
       ? transcode(job.file, transcodeOptions)
       : remux(job.file, remuxOptions);
@@ -370,15 +433,9 @@ export class HlsQueue {
       // Written only after the file is safely uploaded, so a checkpoint never
       // claims progress that was lost.
       if (store && pendingCheckpoint) {
-        const cp = pendingCheckpoint as {
-          durations: number[];
-          samplesProcessed: number;
-          audioSamplesProcessed: number;
-        };
+        const cp = pendingCheckpoint as Checkpoint;
         pendingCheckpoint = null;
-        await store.putJob(
-          this.#snapshot(job, cp.durations, cp.samplesProcessed, cp.audioSamplesProcessed, "processing"),
-        );
+        await store.putJob(this.#snapshot(job, cp, "processing"));
       }
     }
 
@@ -399,25 +456,27 @@ export class HlsQueue {
   }
 
   /** Build the persisted record for `job` at its current progress. */
-  #snapshot(
-    job: InternalJob,
-    durations: number[],
-    samplesProcessed: number,
-    audioSamplesProcessed: number,
-    status: StoredJob["status"],
-  ): StoredJob {
+  #snapshot(job: InternalJob, cp: Checkpoint, status: StoredJob["status"]): StoredJob {
     const now = Date.now();
+    const mode = this.#options.mode ?? "auto";
     return {
       jobId: job.id,
       fileName: job.fileName,
       fileSize: job.fileSize,
       lastModified: job.file instanceof File ? job.file.lastModified : 0,
-      settings: { prefix: job.prefix, segmentDuration: this.#options.segmentDuration ?? 6 },
+      settings: {
+        prefix: job.prefix,
+        segmentDuration: this.#options.segmentDuration ?? 6,
+        mode,
+        // Only meaningful for a re-encode, and only then is it worth the space.
+        ...(mode === "transcode" && this.#options.ladder ? { ladder: this.#options.ladder } : {}),
+      },
       status,
-      lastCompletedSegment: durations.length - 1,
-      samplesProcessed,
-      audioSamplesProcessed,
-      completedSegmentDurations: durations,
+      lastCompletedSegment: cp.durations.length - 1,
+      samplesProcessed: cp.samplesProcessed,
+      audioSamplesProcessed: cp.audioSamplesProcessed,
+      completedSegmentDurations: cp.durations,
+      ...(cp.resumeAtMicros !== undefined ? { resumeAtMicros: cp.resumeAtMicros } : {}),
       createdAt: now,
       updatedAt: now,
     };
