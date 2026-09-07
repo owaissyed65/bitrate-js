@@ -11,6 +11,8 @@ import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 
 import { HlsQueue } from "./queue.js";
+import { JobStore } from "./storage.js";
+import "fake-indexeddb/auto";
 import { PermanentUploadError, assertSafeKey, joinKey, withRetry } from "./upload.js";
 import { makeMp4Blob } from "./testing/make-mp4.js";
 import { ensureWasm } from "./wasm-loader.js";
@@ -352,5 +354,97 @@ describe("object key safety", () => {
     expect(joinKey("/hls/", "a.m4s")).toBe("hls/a.m4s");
     expect(joinKey(undefined, "a.m4s")).toBe("a.m4s");
     expect(() => joinKey("..", "a.m4s")).toThrow();
+  });
+});
+
+describe("resume through the queue (the real user scenario)", () => {
+  it("survives a closed tab and finishes without redoing work", async () => {
+    const store = await JobStore.open(`queue-resume-${Date.now()}`);
+    const source = makeMp4Blob({ frameCount: 300, gop: 30 });
+    const file = new File([source.blob], "holiday.mp4", {
+      type: "video/mp4",
+      lastModified: 1_700_000_000_000,
+    });
+
+    // --- session 1: the user closes the tab partway through ---
+    const uploadedFirst: string[] = [];
+    const first = new HlsQueue({
+      segmentDuration: 1,
+      store,
+      upload: async (item) => {
+        uploadedFirst.push(item.name);
+        // Simulate the tab closing after a few segments are safely stored.
+        if (uploadedFirst.filter((n) => n.endsWith(".m4s")).length >= 4) {
+          first.cancel();
+        }
+      },
+    });
+    first.add(file);
+    const report1 = await first.drain();
+
+    expect(report1.succeeded).toHaveLength(0);
+    const interrupted = await store.resumableJobs();
+    expect(interrupted).toHaveLength(1);
+    expect(interrupted[0]!.lastCompletedSegment).toBeGreaterThanOrEqual(0);
+
+    // --- session 2: the user reopens and re-picks the same file ---
+    const uploadedSecond: string[] = [];
+    const second = new HlsQueue({
+      segmentDuration: 1,
+      store,
+      upload: async (item) => {
+        uploadedSecond.push(item.name);
+      },
+    });
+    second.addResume({ stored: interrupted[0]!, file });
+    const report2 = await second.drain();
+
+    expect(report2.succeeded).toHaveLength(1);
+
+    // Work already done is not repeated.
+    const doneBefore = interrupted[0]!.completedSegmentDurations!.length;
+    const newSegments = uploadedSecond.filter((n) => n.endsWith(".m4s"));
+    expect(newSegments).toHaveLength(10 - doneBefore);
+
+    // The final playlist still indexes all ten segments.
+    expect(report2.succeeded[0]!.masterPlaylist).toMatch(/\.m3u8$/);
+
+    // A finished job leaves nothing behind on the user's disk.
+    expect(await store.getJob(interrupted[0]!.jobId)).toBeUndefined();
+    store.close();
+  });
+
+  it("refuses to resume onto a different file", async () => {
+    const store = await JobStore.open(`queue-mismatch-${Date.now()}`);
+    const stored = {
+      jobId: "job_x",
+      fileName: "original.mp4",
+      fileSize: 12_345,
+      lastModified: 1_700_000_000_000,
+      settings: { prefix: "job_x", segmentDuration: 1 },
+      status: "processing" as const,
+      lastCompletedSegment: 2,
+      samplesProcessed: 90,
+      completedSegmentDurations: [1, 1, 1],
+      createdAt: 0,
+      updatedAt: 0,
+    };
+
+    const wrong = new File([new Uint8Array(99)], "different.mp4", { lastModified: 1 });
+    const q = new HlsQueue({ store });
+
+    // Splicing two different videos together would produce silent corruption.
+    expect(() => q.addResume({ stored, file: wrong })).toThrow(/does not match/);
+    store.close();
+  });
+
+  it("cleans up storage when a job completes normally", async () => {
+    const store = await JobStore.open(`queue-cleanup-${Date.now()}`);
+    const q = new HlsQueue({ segmentDuration: 2, store });
+    q.add(video(60));
+    await q.drain();
+
+    expect(await store.resumableJobs()).toHaveLength(0);
+    store.close();
   });
 });

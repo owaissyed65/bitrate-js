@@ -37,7 +37,17 @@ export { remux, inspect } from "./remux.js";
 export type { OutputFile, RemuxOptions, SourceInfo } from "./remux.js";
 
 export { HlsQueue } from "./queue.js";
-export type { HlsQueueOptions, JobStatus, QueueJob } from "./queue.js";
+export type { HlsQueueOptions, JobStatus, QueueJob, ResumeRequest } from "./queue.js";
+
+export {
+  JobStore,
+  isStorageAvailable,
+  matchesJob,
+  checkQuota,
+  requestPersistence,
+  assertRoomFor,
+} from "./storage.js";
+export type { StoredJob, StoredSegment, QuotaReport } from "./storage.js";
 
 export { withRetry, PermanentUploadError, joinKey, assertSafeKey } from "./upload.js";
 export type { RetryOptions } from "./upload.js";

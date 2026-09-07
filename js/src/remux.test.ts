@@ -341,3 +341,132 @@ function findBox(buf: Uint8Array, path: string[]): Uint8Array {
   }
   return current;
 }
+
+describe("resume after an interruption", () => {
+  /** Package `blob`, stopping after `stopAfter` segments as if the tab closed. */
+  async function partialRun(blob: Blob, stopAfter: number) {
+    const files: OutputFile[] = [];
+    const completed: { index: number; duration: number; samplesProcessed: number }[] = [];
+
+    for await (const f of remux(blob, {
+      prefix: "720p",
+      segmentDuration: 1,
+      onSegment: (info) => completed.push(info),
+    })) {
+      files.push(f);
+      if (completed.length >= stopAfter) break; // simulate the tab closing
+    }
+    return { files, completed };
+  }
+
+  it("produces byte-identical output to an uninterrupted run", async () => {
+    const source = makeMp4Blob({ frameCount: 300, gop: 30 });
+
+    const whole = await remuxAll(source.blob, { prefix: "720p", segmentDuration: 1 });
+
+    const { files: partial, completed } = await partialRun(source.blob, 4);
+    const resumed: OutputFile[] = [];
+    for await (const f of remux(source.blob, {
+      prefix: "720p",
+      segmentDuration: 1,
+      resume: {
+        completedSegmentDurations: completed.map((c) => c.duration),
+        samplesProcessed: completed.at(-1)!.samplesProcessed,
+      },
+    })) {
+      resumed.push(f);
+    }
+
+    // Stitch: only the segments the first run actually *confirmed* (those with
+    // an onSegment callback), then everything the resume produced. A segment
+    // yielded but not confirmed is exactly the one a crash would have lost, and
+    // the resume re-creates it.
+    const stitched = [
+      ...partial.filter((f) => f.name.endsWith(".m4s")).slice(0, completed.length),
+      ...resumed.filter((f) => f.name.endsWith(".m4s")),
+    ];
+    const expected = whole.filter((f) => f.name.endsWith(".m4s"));
+
+    expect(stitched.map((f) => f.name)).toEqual(expected.map((f) => f.name));
+    for (let i = 0; i < expected.length; i++) {
+      expect(await bytesOf(stitched[i]!), stitched[i]!.name).toEqual(await bytesOf(expected[i]!));
+    }
+  });
+
+  it("writes a playlist listing every segment, restored and new alike", async () => {
+    const source = makeMp4Blob({ frameCount: 300, gop: 30 });
+    const { completed } = await partialRun(source.blob, 4);
+
+    let playlist = "";
+    for await (const f of remux(source.blob, {
+      prefix: "720p",
+      segmentDuration: 1,
+      resume: {
+        completedSegmentDurations: completed.map((c) => c.duration),
+        samplesProcessed: completed.at(-1)!.samplesProcessed,
+      },
+    })) {
+      if (f.isManifest) playlist = await f.blob.text();
+    }
+
+    // All ten segments must be indexed, or playback stops at the resume point.
+    expect(playlist.match(/#EXTINF/g)).toHaveLength(10);
+    expect(playlist).toContain("720p_00000.m4s");
+    expect(playlist).toContain("720p_00009.m4s");
+    expect(playlist).toContain("#EXT-X-ENDLIST");
+  });
+
+  it("does not redo work already completed", async () => {
+    const source = makeMp4Blob({ frameCount: 300, gop: 30 });
+    const { completed } = await partialRun(source.blob, 5);
+
+    const produced: number[] = [];
+    for await (const _ of remux(source.blob, {
+      prefix: "720p",
+      segmentDuration: 1,
+      resume: {
+        completedSegmentDurations: completed.map((c) => c.duration),
+        samplesProcessed: completed.at(-1)!.samplesProcessed,
+      },
+      onSegment: ({ index }) => produced.push(index),
+    })) {
+      // drain
+    }
+
+    // Five segments were done; only 5..9 should be produced now.
+    expect(produced).toEqual([5, 6, 7, 8, 9]);
+  });
+
+  it("resuming from nothing behaves like a fresh run", async () => {
+    const source = makeMp4Blob({ frameCount: 60, gop: 30 });
+    const fresh = await remuxAll(source.blob, { segmentDuration: 1 });
+    const resumed = await remuxAll(source.blob, {
+      segmentDuration: 1,
+      resume: { completedSegmentDurations: [], samplesProcessed: 0 },
+    });
+
+    expect(resumed.map((f) => f.name)).toEqual(fresh.map((f) => f.name));
+  });
+
+  it("keeps the decode timeline continuous across the resume point", async () => {
+    const source = makeMp4Blob({ frameCount: 120, gop: 30 });
+    const { completed } = await partialRun(source.blob, 2);
+
+    let firstResumedSegment: OutputFile | undefined;
+    for await (const f of remux(source.blob, {
+      prefix: "720p",
+      segmentDuration: 1,
+      resume: {
+        completedSegmentDurations: completed.map((c) => c.duration),
+        samplesProcessed: completed.at(-1)!.samplesProcessed,
+      },
+    })) {
+      if (f.name.endsWith(".m4s") && !firstResumedSegment) firstResumedSegment = f;
+    }
+
+    // Two 1-second segments preceded it, so tfdt must be 2 * timescale.
+    const tfdt = findBox(await bytesOf(firstResumedSegment!), ["moof", "traf", "tfdt"]);
+    const view = new DataView(tfdt.buffer, tfdt.byteOffset, tfdt.byteLength);
+    expect(Number(view.getBigUint64(4))).toBe(2 * 90_000);
+  });
+});

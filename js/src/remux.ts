@@ -28,6 +28,26 @@ export interface RemuxOptions {
   signal?: AbortSignal;
   /** Reports progress as a 0–1 fraction of samples processed. */
   onProgress?: (progress: { processed: number; total: number; fraction: number }) => void;
+  /**
+   * Continue an interrupted run instead of starting over.
+   *
+   * Supply the durations of the segments already produced, in order, and the
+   * number of samples they consumed. Skipped work is not redone (PLAN.md §3e).
+   */
+  resume?: ResumeState;
+  /**
+   * Called as each segment completes, so the caller can persist progress and
+   * be able to resume later. Receives everything {@link ResumeState} needs.
+   */
+  onSegment?: (info: { index: number; duration: number; samplesProcessed: number }) => void;
+}
+
+/** Where a previous run stopped. */
+export interface ResumeState {
+  /** Durations of already-produced segments, in index order. */
+  completedSegmentDurations: readonly number[];
+  /** How many source samples those segments consumed. */
+  samplesProcessed: number;
 }
 
 /** What the source turned out to contain. */
@@ -72,7 +92,8 @@ export async function inspect(file: Blob): Promise<SourceInfo> {
  * ```
  */
 export async function* remux(file: Blob, options: RemuxOptions = {}): AsyncGenerator<OutputFile> {
-  const { prefix = "video", segmentDuration = 6, readWindow, signal, onProgress } = options;
+  const { prefix = "video", segmentDuration = 6, readWindow, signal, onProgress, onSegment, resume } =
+    options;
 
   await ensureWasm();
   signal?.throwIfAborted();
@@ -91,6 +112,8 @@ export async function* remux(file: Blob, options: RemuxOptions = {}): AsyncGener
       segmentDuration,
     );
 
+    // The init segment is identical on a resume, but re-emitting it is cheap
+    // and makes a resumed run self-contained if the first upload never landed.
     yield {
       name: segmenter.initName(),
       blob: new Blob([segmenter.initSegment() as BlobPart], { type: MIME_SEGMENT }),
@@ -98,29 +121,47 @@ export async function* remux(file: Blob, options: RemuxOptions = {}): AsyncGener
       isManifest: false,
     };
 
-    const samples = buildSampleList(demuxer);
+    const allSamples = buildSampleList(demuxer);
     // The index is all we keep from the demuxer; release its WASM memory now
     // rather than holding it for the whole packaging run.
     demuxer.free();
 
-    let processed = 0;
+    // Replay what a previous run finished so numbering, the playlist and the
+    // decode timeline all continue rather than restarting.
+    let skipped = 0;
+    if (resume) {
+      for (const duration of resume.completedSegmentDurations) {
+        segmenter.restoreSegment(duration);
+      }
+      skipped = Math.min(Math.max(resume.samplesProcessed, 0), allSamples.length);
+    }
+    const samples = skipped > 0 ? allSamples.slice(skipped) : allSamples;
+
+    let processed = skipped;
+    const total = allSamples.length;
+
     for await (const { sample, data } of readSamples(file, samples, { readWindow, signal })) {
       segmenter.pushSample(data, sample.duration, sample.isSync, sample.compositionOffset);
-      processed++;
 
       // Drain eagerly so finished segments are handed over (and freed) as soon
       // as they exist, instead of accumulating until the end.
-      yield* drain(segmenter);
+      //
+      // `processed` is reported *before* the increment on purpose: a segment is
+      // closed by the keyframe that starts the *next* one, so the segment just
+      // finished contains only the samples before the current sample. Reporting
+      // the post-increment count would make a resume skip that keyframe.
+      yield* drain(segmenter, processed, onSegment);
 
+      processed++;
       if (onProgress && processed % 100 === 0) {
-        onProgress({ processed, total: samples.length, fraction: processed / samples.length });
+        onProgress({ processed, total, fraction: processed / total });
       }
     }
 
     segmenter.finish();
-    yield* drain(segmenter);
+    yield* drain(segmenter, processed, onSegment);
 
-    onProgress?.({ processed, total: samples.length, fraction: 1 });
+    onProgress?.({ processed, total, fraction: 1 });
 
     yield {
       name: segmenter.playlistName(),
@@ -137,13 +178,19 @@ export async function* remux(file: Blob, options: RemuxOptions = {}): AsyncGener
 }
 
 /** Hand over every finished segment the segmenter is holding. */
-function* drain(segmenter: Fmp4Segmenter): Generator<OutputFile> {
+function* drain(
+  segmenter: Fmp4Segmenter,
+  samplesProcessed: number,
+  onSegment: RemuxOptions["onSegment"],
+): Generator<OutputFile> {
   for (;;) {
     const segment = segmenter.takeSegment();
     if (!segment) return;
+    const index = segment.index;
+    const duration = segment.duration;
     try {
       yield {
-        name: segmenter.segmentName(segment.index),
+        name: segmenter.segmentName(index),
         blob: new Blob([segment.data as BlobPart], { type: MIME_SEGMENT }),
         contentType: MIME_SEGMENT,
         isManifest: false,
@@ -151,6 +198,9 @@ function* drain(segmenter: Fmp4Segmenter): Generator<OutputFile> {
     } finally {
       segment.free();
     }
+    // Reported after the yield so a caller persisting progress only records a
+    // segment the consumer has actually received.
+    onSegment?.({ index, duration, samplesProcessed });
   }
 }
 

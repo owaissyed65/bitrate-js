@@ -43,6 +43,10 @@ pub enum MuxError {
     SampleTooLarge,
     /// A segment exceeded [`MAX_SAMPLES_PER_SEGMENT`] without a keyframe.
     SegmentTooLong,
+    /// `restore_segment` was called after sample pushing had begun.
+    RestoreAfterSamples,
+    /// A restored segment's duration was negative or non-finite.
+    BadRestoreDuration,
 }
 
 impl core::fmt::Display for MuxError {
@@ -56,6 +60,10 @@ impl core::fmt::Display for MuxError {
             Self::SampleTooLarge => "sample exceeds the maximum allowed size",
             Self::SegmentTooLong => {
                 "segment exceeded the maximum sample count; is the source missing keyframes?"
+            }
+            Self::RestoreAfterSamples => "restoreSegment must be called before any sample is pushed",
+            Self::BadRestoreDuration => {
+                "restored segment duration must be finite and non-negative"
             }
         };
         f.write_str(msg)
@@ -216,6 +224,26 @@ impl Fmp4Segmenter {
         });
         Ok(())
     }
+
+    /// Re-register a segment produced before an interruption.
+    /// See [`Fmp4Segmenter::restore_segment`].
+    pub fn try_restore_segment(&mut self, duration: f64) -> Result<(), MuxError> {
+        if !self.pending.is_empty() {
+            return Err(MuxError::RestoreAfterSamples);
+        }
+        if !duration.is_finite() || duration < 0.0 {
+            return Err(MuxError::BadRestoreDuration);
+        }
+
+        let index = self.next_index;
+        self.playlist.add_segment(&self.segment_name(index), duration);
+
+        // Advance the timeline so the next segment's tfdt continues correctly.
+        let ticks = (duration * f64::from(self.config.timescale)).round().max(0.0) as u64;
+        self.base_decode_time = self.base_decode_time.saturating_add(ticks);
+        self.next_index += 1;
+        Ok(())
+    }
 }
 
 #[wasm_bindgen]
@@ -263,6 +291,26 @@ impl Fmp4Segmenter {
     #[wasm_bindgen(js_name = initName)]
     pub fn init_name(&self) -> String {
         format!("{}_init.mp4", self.prefix)
+    }
+
+    /// Re-register a segment produced before an interruption.
+    ///
+    /// Resuming needs the playlist to list every segment, and the timeline to
+    /// continue where it stopped — so a resumed run replays the durations of
+    /// the segments it already has before pushing new samples (PLAN.md §3e).
+    ///
+    /// Call once per completed segment, in order, before the first
+    /// [`Self::push_sample`].
+    #[wasm_bindgen(js_name = restoreSegment)]
+    pub fn restore_segment(&mut self, duration: f64) -> Result<(), JsError> {
+        self.try_restore_segment(duration)
+            .map_err(|e| JsError::new(&e.to_string()))
+    }
+
+    /// Index the next produced segment will be given.
+    #[wasm_bindgen(getter, js_name = nextSegmentIndex)]
+    pub fn next_segment_index(&self) -> u32 {
+        self.next_index
     }
 
     /// Close any partial segment and mark the playlist complete. Call once the

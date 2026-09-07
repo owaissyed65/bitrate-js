@@ -7,7 +7,8 @@
  * (PLAN.md §3a).
  */
 
-import { remux, type RemuxOptions } from "./remux.js";
+import { remux, type RemuxOptions, type ResumeState } from "./remux.js";
+import { JobStore, matchesJob, type StoredJob } from "./storage.js";
 import { withRetry } from "./upload.js";
 import type {
   JobFailure,
@@ -54,16 +55,33 @@ export interface HlsQueueOptions {
    */
   upload?: UploadAdapter;
 
+  /**
+   * Persist progress so an interrupted job can be resumed after a reload.
+   *
+   * Open one with `await JobStore.open()`. Without it the queue still works,
+   * but a closed tab loses whatever was in flight (PLAN.md §3e).
+   */
+  store?: JobStore;
+
   onProgress?: (progress: JobProgress) => void;
   onJobDone?: (result: JobResult) => void;
   /** Called per failed file; the queue continues with the rest. */
   onJobError?: (failure: JobFailure) => void;
 }
 
+/** An interrupted job, paired with the file needed to continue it. */
+export interface ResumeRequest {
+  stored: StoredJob;
+  /** The same source file, re-picked by the user or via a stored handle. */
+  file: File;
+}
+
 interface InternalJob extends QueueJob {
   file: File | Blob;
   prefix: string;
   produced: string[];
+  /** Durations of segments already completed, for a resumed run. */
+  resume?: ResumeState;
 }
 
 /** Monotonic counter making job ids unique within a queue. */
@@ -136,6 +154,39 @@ export class HlsQueue {
     });
   }
 
+  /**
+   * Queue an interrupted job to continue where it stopped.
+   *
+   * The file is verified against the stored name, size and modification time —
+   * resuming onto a different video would splice two files together.
+   *
+   * @throws if the file does not match the stored job.
+   */
+  addResume({ stored, file }: ResumeRequest): string {
+    if (!matchesJob(stored, file)) {
+      throw new Error(
+        `"${file.name}" does not match the interrupted job (expected "${stored.fileName}", ${stored.fileSize} bytes). Please choose the same file.`,
+      );
+    }
+
+    this.#jobs.push({
+      id: stored.jobId,
+      fileName: stored.fileName,
+      fileSize: stored.fileSize,
+      status: "queued",
+      // Resumed jobs keep their original prefix so earlier output still matches.
+      prefix: stored.settings.prefix,
+      progress: 0,
+      file,
+      produced: [],
+      resume: {
+        completedSegmentDurations: stored.completedSegmentDurations ?? [],
+        samplesProcessed: stored.samplesProcessed,
+      },
+    });
+    return stored.jobId;
+  }
+
   /** A snapshot of every job, for rendering progress. */
   get jobs(): QueueJob[] {
     return this.#jobs.map(({ file: _file, prefix: _prefix, produced: _p, ...job }) => ({ ...job }));
@@ -199,6 +250,10 @@ export class HlsQueue {
   async #process(job: InternalJob): Promise<JobResult> {
     job.status = "processing";
 
+    const store = this.#options.store;
+    const segmentDuration = this.#options.segmentDuration ?? 6;
+    const durations = [...(job.resume?.completedSegmentDurations ?? [])];
+
     const upload = this.#options.upload
       ? withRetry(this.#options.upload, {
           retries: this.#options.retries ?? 2,
@@ -206,9 +261,11 @@ export class HlsQueue {
         })
       : undefined;
 
+    await store?.putJob(this.#snapshot(job, durations, job.resume?.samplesProcessed ?? 0, "processing"));
+
     const remuxOptions: RemuxOptions = {
       prefix: job.prefix,
-      segmentDuration: this.#options.segmentDuration ?? 6,
+      segmentDuration,
       signal: this.#controller.signal,
       onProgress: ({ fraction }) => {
         job.progress = fraction;
@@ -216,6 +273,17 @@ export class HlsQueue {
       },
     };
     if (this.#options.readWindow !== undefined) remuxOptions.readWindow = this.#options.readWindow;
+    if (job.resume) remuxOptions.resume = job.resume;
+
+    // Checkpointing is driven by onSegment rather than by the output loop:
+    // it reports exactly the sample count a later resume must restart from.
+    let pendingCheckpoint: { durations: number[]; samplesProcessed: number } | null = null;
+    if (store) {
+      remuxOptions.onSegment = ({ duration, samplesProcessed }) => {
+        durations.push(duration);
+        pendingCheckpoint = { durations: [...durations], samplesProcessed };
+      };
+    }
 
     let masterPlaylist = "";
     for await (const output of remux(job.file, remuxOptions)) {
@@ -225,10 +293,22 @@ export class HlsQueue {
       if (upload) {
         await upload({ jobId: job.id, ...output });
       }
+
+      // Written only after the file is safely uploaded, so a checkpoint never
+      // claims progress that was lost.
+      if (store && pendingCheckpoint) {
+        const cp = pendingCheckpoint as { durations: number[]; samplesProcessed: number };
+        pendingCheckpoint = null;
+        await store.putJob(this.#snapshot(job, cp.durations, cp.samplesProcessed, "processing"));
+      }
     }
 
     job.status = "done";
     job.progress = 1;
+
+    // The job is complete and every file uploaded, so nothing needs to linger
+    // on the user's disk (SECURITY.md §6).
+    await store?.deleteJob(job.id);
 
     const result: JobResult = {
       jobId: job.id,
@@ -237,5 +317,28 @@ export class HlsQueue {
     };
     this.#options.onJobDone?.(result);
     return result;
+  }
+
+  /** Build the persisted record for `job` at its current progress. */
+  #snapshot(
+    job: InternalJob,
+    durations: number[],
+    samplesProcessed: number,
+    status: StoredJob["status"],
+  ): StoredJob {
+    const now = Date.now();
+    return {
+      jobId: job.id,
+      fileName: job.fileName,
+      fileSize: job.fileSize,
+      lastModified: job.file instanceof File ? job.file.lastModified : 0,
+      settings: { prefix: job.prefix, segmentDuration: this.#options.segmentDuration ?? 6 },
+      status,
+      lastCompletedSegment: durations.length - 1,
+      samplesProcessed,
+      completedSegmentDurations: durations,
+      createdAt: now,
+      updatedAt: now,
+    };
   }
 }

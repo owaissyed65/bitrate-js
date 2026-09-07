@@ -460,3 +460,65 @@ fn sample_fields_are_carried_through() {
     assert!(s.is_sync);
     assert_eq!(s.composition_offset, -5);
 }
+
+// ---- resume ---------------------------------------------------------------
+
+#[test]
+fn restored_segments_appear_in_the_playlist() {
+    let mut s = segmenter(1.0);
+    let _ = s.init_segment();
+    // Pretend segments 0 and 1 were produced before an interruption.
+    s.try_restore_segment(1.0).expect("restore");
+    s.try_restore_segment(1.0).expect("restore");
+
+    push_frames(&mut s, 30, 30);
+    s.finish();
+
+    let m3u8 = s.playlist_text();
+    assert!(m3u8.contains("720p_00000.m4s"), "restored segment 0");
+    assert!(m3u8.contains("720p_00001.m4s"), "restored segment 1");
+    assert!(m3u8.contains("720p_00002.m4s"), "newly produced segment 2");
+    assert_eq!(m3u8.matches("#EXTINF").count(), 3);
+}
+
+#[test]
+fn resumed_segments_continue_the_numbering() {
+    let mut s = segmenter(1.0);
+    s.try_restore_segment(1.0).expect("restore");
+    s.try_restore_segment(1.0).expect("restore");
+    assert_eq!(s.next_segment_index(), 2);
+
+    push_frames(&mut s, 30, 30);
+    s.finish();
+
+    let seg = s.take_segment().expect("segment");
+    assert_eq!(seg.index, 2, "numbering must not restart");
+}
+
+#[test]
+fn resumed_segments_continue_the_decode_timeline() {
+    // A resumed segment whose tfdt restarted at zero would make the player
+    // seek to the wrong place.
+    let mut s = segmenter(1.0);
+    s.try_restore_segment(2.0).expect("restore");
+    push_frames(&mut s, 30, 30);
+    s.finish();
+
+    let seg = s.take_segment().expect("segment");
+    let tfdt = path(&seg.data, "moof/traf/tfdt");
+    assert_eq!(be64(tfdt, 4), 2 * u64::from(TIMESCALE), "timeline continues");
+}
+
+#[test]
+fn restore_is_rejected_once_samples_have_been_pushed() {
+    let mut s = segmenter(1.0);
+    s.add_sample(&[1, 2, 3], FRAME, true, 0).expect("push");
+    assert!(s.try_restore_segment(1.0).is_err());
+}
+
+#[test]
+fn restore_rejects_a_nonsensical_duration() {
+    let mut s = segmenter(1.0);
+    assert!(s.try_restore_segment(f64::NAN).is_err());
+    assert!(s.try_restore_segment(-1.0).is_err());
+}
