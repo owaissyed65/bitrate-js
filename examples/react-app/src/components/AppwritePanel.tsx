@@ -1,5 +1,5 @@
 import { Account, Client, Permission, Role, Storage } from "appwrite";
-import { HlsQueue } from "bitrate-js";
+import { HlsQueue, rewritePlaylistUris } from "bitrate-js";
 import { appwriteAdapter } from "bitrate-js/adapters/appwrite";
 import { useEffect, useState } from "react";
 
@@ -176,15 +176,35 @@ export function AppwritePanel() {
       const permissions = publicRead ? [Permission.read(Role.any())] : undefined;
       if (publicRead) say("files will be created with public read permission");
 
+      // The adapter takes an authenticated Storage instance — never a key.
+      const put = appwriteAdapter({
+        storage,
+        bucketId: settings.bucketId,
+        ...(permissions ? { permissions } : {}),
+      });
+
+      /** Appwrite's view URL for a file, which is addressed by id, not path. */
+      const viewUrl = (name: string) =>
+        `${settings.endpoint}/storage/buckets/${settings.bucketId}/files/${name}/view?project=${settings.projectId}`;
+
       const queue = new HlsQueue({
         segmentDuration: 6,
         retries: 2,
-        // The adapter takes an authenticated Storage instance — never a key.
-        upload: appwriteAdapter({
-          storage,
-          bucketId: settings.bucketId,
-          ...(permissions ? { permissions } : {}),
-        }),
+        upload: async (item) => {
+          // Appwrite serves files by id, so a playlist's relative URIs resolve
+          // under the playlist's own URL and 404. Point them at absolute view
+          // URLs instead — the playlist is emitted last, so every segment is
+          // already uploaded by now.
+          if (item.isManifest) {
+            const rewritten = rewritePlaylistUris(await item.blob.text(), viewUrl);
+            await put({
+              ...item,
+              blob: new Blob([rewritten], { type: item.contentType }),
+            });
+            return;
+          }
+          await put(item);
+        },
         onJobDone: () => say("packaging and upload finished", "ok"),
         onJobError: ({ error }) => say(error.message, "err"),
       });
@@ -217,6 +237,7 @@ export function AppwritePanel() {
           if (name.endsWith(".m3u8")) setPlaylistUrl(url);
         }
         setUploaded(results);
+        say("playlist URIs rewritten to absolute view URLs — Appwrite serves files by id, so relative ones would 404", "ok");
         say("these are real, publicly addressable URLs if your bucket permits reads", "ok");
       }
     } catch (e) {

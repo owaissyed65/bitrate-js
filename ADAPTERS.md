@@ -16,8 +16,12 @@ type UploadAdapter = (item: UploadItem) => Promise<void>;
 ```
 
 Because it is always *"store these bytes at this path with this content type"*, the same
-output works on any storage. Segment URIs are **relative**, so nothing needs rewriting per
-provider.
+output works on any storage. Segment URIs are **relative**, so path-based storage needs no
+rewriting at all.
+
+> Storage that addresses files by **id** rather than path — Appwrite, for instance — is the
+> exception: relative URIs resolve under the playlist's own URL and 404. Use
+> [`rewritePlaylistUris`](#appwrite-needs-the-playlist-rewritten) there.
 
 ---
 
@@ -458,6 +462,41 @@ and `m3u8`, or clear the list.
 **Note on file ids:** Appwrite allows at most 36 characters of `[a-zA-Z0-9._-]`, so segment
 names are mapped deterministically. The same file always gets the same id, which keeps
 retries idempotent rather than creating duplicates.
+
+### Appwrite needs the playlist rewritten
+
+Appwrite addresses files by **id**, not by path:
+
+```
+https://sfo.cloud.appwrite.io/v1/storage/buckets/videos/files/<fileId>/view?project=…
+```
+
+A playlist references its segments relatively, which works on path-based storage but
+resolves under the *playlist's own URL* here — every segment 404s, and the player simply
+stalls after loading the playlist. Point the URIs at absolute view URLs instead:
+
+```ts
+import { HlsQueue, rewritePlaylistUris } from "bitrate-js";
+import { appwriteAdapter } from "bitrate-js/adapters/appwrite";
+
+const put = appwriteAdapter({ storage, bucketId, permissions });
+const viewUrl = (name: string) =>
+  `/storage/buckets//files//view?project=`;
+
+const queue = new HlsQueue({
+  upload: async (item) => {
+    // The playlist is emitted last, so every segment is already uploaded.
+    if (item.isManifest) {
+      const rewritten = rewritePlaylistUris(await item.blob.text(), viewUrl);
+      await put({ ...item, blob: new Blob([rewritten], { type: item.contentType }) });
+      return;
+    }
+    await put(item);
+  },
+});
+```
+
+The same applies to any storage that does not serve files by path.
 
 ---
 

@@ -123,3 +123,8 @@ export type { TranscodeOptions } from "./transcode.js";
 // lets a user download the result. Tiny, and also available at `bitrate-js/zip`.
 export { createZip, downloadZip, crc32 } from "./zip.js";
 export type { ZipEntry } from "./zip.js";
+
+// Storage that addresses files by id rather than path (Appwrite, for one)
+// cannot resolve a playlist's relative URIs; rewrite them to absolute URLs.
+export { rewritePlaylistUris, playlistReferences } from "./playlist.js";
+export type { UriResolver } from "./playlist.js";
