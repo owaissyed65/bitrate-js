@@ -825,8 +825,56 @@ export async function* transcode(
       }
     };
 
-    const frames: VideoFrame[] = [];
     decoder.decoder.ondequeue = null;
+
+    /**
+     * Encode one decoded frame into every rung.
+     *
+     * Shared by the read loop and the tail after `decoder.flush()`. The tail
+     * used to do this itself, without keyframes, backpressure or progress —
+     * which mattered far more than it looks, because the decoder had no
+     * backpressure either. Reading outruns decoding on any large source, so
+     * frames piled up inside the decoder and the *majority* of the encoding
+     * happened in that tail: no progress, no segment boundaries, unbounded
+     * memory, and a job that sat on "writing playlists" for minutes.
+     */
+    async function* pushFrame(frame: VideoFrame): AsyncGenerator<OutputFile> {
+      // Frames decoded only to reach a resume point are not part of the output.
+      // Closing them is not optional: a VideoFrame holds GPU/system memory that
+      // garbage collection will not reclaim.
+      if (frame.timestamp < resumeAtUs) {
+        frame.close();
+        return;
+      }
+
+      const forceKey = frame.timestamp - lastKeyframeUs >= segmentUs;
+      if (forceKey) {
+        lastKeyframeUs = frame.timestamp;
+        keyframeUs.push(frame.timestamp);
+      }
+
+      for (const rung of rungs) {
+        rung.encoder.encode(frame, { keyFrame: forceKey });
+      }
+      // Keep the audio level with the video, so a segment closing here carries
+      // the sound that belongs to it.
+      advanceAudio(frame.timestamp / 1_000_000);
+      frame.close();
+
+      processed++;
+      for (let i = 0; i < rungs.length; i++) {
+        yield* drainRung(rungs[i]!, finished[i]!);
+      }
+      // Everything yielded above has been consumed — and, in the queue,
+      // uploaded — by the time control returns here, so a checkpoint written
+      // now cannot claim a segment that never landed.
+      checkpoint();
+
+      await applyBackpressure(rungs, signal);
+      if (onProgress && processed % 50 === 0) {
+        onProgress({ processed, total: samples.length, fraction: processed / samples.length });
+      }
+    }
 
     onPhase?.({
       stage: "encoding",
@@ -841,6 +889,17 @@ export async function* transcode(
       const sample = item.sample as SampleLocation & { decodeTime: number };
       const data = item.data;
 
+      // Surface the decoder's own error rather than the InvalidStateError that
+      // feeding a closed codec produces a moment later. The second names
+      // nothing; the first says the source could not be decoded.
+      if (decoder.failure) throw decoder.failure;
+      if (decoder.decoder.state === "closed") {
+        throw new Error(
+          "The decoder closed while reading the source. Its video track is most likely " +
+            "damaged or uses a profile this browser cannot decode.",
+        );
+      }
+
       const timestampUs = Math.round((sample.decodeTime / sourceTimescale) * 1_000_000);
       decoder.decoder.decode(
         new EncodedVideoChunk({
@@ -851,62 +910,25 @@ export async function* transcode(
         }),
       );
 
-      // Hand every decoded frame to each encoder, then release it. A VideoFrame
-      // holds GPU/system memory and is not garbage collected.
-      for (const frame of decoder.take()) {
-        // Frames decoded only to reach the resume point are not part of the
-        // output. Closing them here is not optional: a VideoFrame holds
-        // GPU/system memory that garbage collection will not reclaim.
-        if (frame.timestamp < resumeAtUs) {
-          frame.close();
-          continue;
-        }
+      // Hand every decoded frame to each encoder, then release it.
+      for (const frame of decoder.take()) yield* pushFrame(frame);
 
-        const forceKey = frame.timestamp - lastKeyframeUs >= segmentUs;
-        if (forceKey) {
-          lastKeyframeUs = frame.timestamp;
-          keyframeUs.push(frame.timestamp);
-        }
-
-        for (const rung of rungs) {
-          rung.encoder.encode(frame, { keyFrame: forceKey });
-        }
-        // Keep the audio level with the video, so a segment closing here
-        // carries the sound that belongs to it.
-        advanceAudio(frame.timestamp / 1_000_000);
-        frame.close();
-
-        processed++;
-        for (let i = 0; i < rungs.length; i++) {
-          yield* drainRung(rungs[i]!, finished[i]!);
-        }
-        // Everything yielded above has been consumed — and, in the queue,
-        // uploaded — by the time control returns here, so a checkpoint written
-        // now cannot claim a segment that never landed.
-        checkpoint();
-
-        await applyBackpressure(rungs, signal);
-        if (onProgress && processed % 50 === 0) {
-          onProgress({ processed, total: samples.length, fraction: processed / samples.length });
-        }
-      }
-      frames.length = 0;
+      // Wait for the decoder as well as the encoders. Reading is far faster
+      // than decoding, so without this the queue grows for the whole file and
+      // every frame in it surfaces at once on flush.
+      await applyDecoderBackpressure(decoder, signal);
     }
 
-    onPhase?.({ stage: "finishing", detail: "flushing encoders and writing playlists" });
+    onPhase?.({ stage: "finishing", detail: "draining the decoder" });
 
     await decoder.decoder.flush();
     if (decoder.failure) throw decoder.failure;
-    for (const frame of decoder.take()) {
-      // The same guard as the main loop: on a resumed run the decoder's tail
-      // can still hold frames from before the restart point.
-      if (frame.timestamp < resumeAtUs) {
-        frame.close();
-        continue;
-      }
-      for (const rung of rungs) rung.encoder.encode(frame, { keyFrame: false });
-      frame.close();
-    }
+
+    // The tail goes through the same path as everything else, so it still
+    // closes segments on keyframes and still reports progress.
+    for (const frame of decoder.take()) yield* pushFrame(frame);
+
+    onPhase?.({ stage: "finishing", detail: "flushing encoders and writing playlists" });
 
     // Flush every encoder before touching the audio. A rung's segmenter is
     // created by its encoder's *output callback*, which is asynchronous — on a
@@ -1275,6 +1297,42 @@ export interface BackpressureRung {
   bitrate: number;
   error?: Error | undefined;
   encoder: { encodeQueueSize: number; state: string };
+}
+
+/** The part of the decoder wrapper backpressure needs. @internal */
+export interface BackpressureDecoder {
+  decoder: { decodeQueueSize: number; state: string };
+  failure: Error | null;
+}
+
+/**
+ * Wait until the decoder has caught up.
+ *
+ * Its absence was invisible for a long time because the encoders *were*
+ * throttled, so the pipeline looked bounded. It was not: reading a file is far
+ * faster than decoding it, so on a large source the decoder queue grew for the
+ * whole run and most of the frames only emerged from `flush()` at the end —
+ * turning the last stage into the longest one, with no progress and no
+ * segment boundaries.
+ *
+ * @internal Exported for tests.
+ */
+export async function applyDecoderBackpressure(
+  decoder: BackpressureDecoder,
+  signal?: AbortSignal,
+): Promise<void> {
+  while (decoder.decoder.decodeQueueSize > MAX_QUEUED_FRAMES) {
+    signal?.throwIfAborted();
+
+    // As with the encoders: a dead decoder never drains, so waiting on one is
+    // waiting forever.
+    if (decoder.failure) throw decoder.failure;
+    if (decoder.decoder.state === "closed") {
+      throw new Error("The decoder closed before the source was fully read.");
+    }
+
+    await yieldToEventLoop();
+  }
 }
 
 /** @internal Exported for tests. */

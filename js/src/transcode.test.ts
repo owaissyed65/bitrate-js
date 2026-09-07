@@ -13,6 +13,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   applyBackpressure,
+  applyDecoderBackpressure,
   buildMaster,
   syncSampleAtOrBefore,
   yieldToEventLoop,
@@ -218,5 +219,55 @@ describe("yielding without a timer", () => {
   it("resolves many times over without leaking ports", async () => {
     for (let i = 0; i < 200; i++) await yieldToEventLoop();
     expect(true).toBe(true);
+  });
+});
+
+describe("decoder backpressure", () => {
+  /**
+   * The absence of this was the expensive bug: the *encoders* were throttled,
+   * so the pipeline looked bounded, but nothing throttled the decoder. Reading
+   * a file is far faster than decoding it, so on a large source the decode
+   * queue grew for the entire run and most frames only appeared at flush() —
+   * making the final stage the longest one, with no progress reported, no
+   * segment boundaries in the tail, and memory growing with file length.
+   */
+  const decoder = (queue: number, over: Partial<{ state: string; failure: Error | null }> = {}) => ({
+    decoder: { decodeQueueSize: queue, state: over.state ?? "configured" },
+    failure: over.failure ?? null,
+  });
+
+  it("returns at once when the decoder is keeping up", async () => {
+    await expect(applyDecoderBackpressure(decoder(0))).resolves.toBeUndefined();
+  });
+
+  it("waits while the decoder is behind, then continues", async () => {
+    const d = decoder(99);
+    const waiting = applyDecoderBackpressure(d);
+
+    let settled = false;
+    void waiting.then(() => (settled = true));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(settled).toBe(false);
+
+    d.decoder.decodeQueueSize = 0;
+    await expect(waiting).resolves.toBeUndefined();
+  });
+
+  it("throws the decoder's error instead of waiting forever", async () => {
+    const boom = new Error("Decoder error.");
+    await expect(applyDecoderBackpressure(decoder(99, { failure: boom }))).rejects.toThrow(boom);
+  });
+
+  it("reports a closed decoder that delivered no error", async () => {
+    await expect(applyDecoderBackpressure(decoder(99, { state: "closed" }))).rejects.toThrow(
+      /decoder closed/i,
+    );
+  });
+
+  it("honours an abort", async () => {
+    const controller = new AbortController();
+    const waiting = applyDecoderBackpressure(decoder(99), controller.signal);
+    controller.abort();
+    await expect(waiting).rejects.toThrow();
   });
 });
