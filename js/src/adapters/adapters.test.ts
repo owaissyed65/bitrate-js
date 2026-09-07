@@ -14,6 +14,7 @@ import { presignedAdapter } from "./presigned.js";
 import { s3Adapter } from "./s3.js";
 import { supabaseAdapter } from "./supabase.js";
 import { appwriteAdapter, toAppwriteFileId } from "./appwrite.js";
+import { firebaseAdapter } from "./firebase.js";
 
 function segment(name = "720p_00001.m4s"): UploadItem {
   return {
@@ -37,7 +38,7 @@ function manifest(name = "720p.m3u8"): UploadItem {
 
 describe("presignedAdapter", () => {
   it("PUTs the bytes to the signed URL with the right content type", async () => {
-    const fetchMock = vi.fn(async () => new Response(null, { status: 200 }));
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => new Response(null, { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
 
     const upload = presignedAdapter({ getUrl: (i) => `https://sign.test/${i.name}?sig=abc` });
@@ -273,7 +274,7 @@ describe("no adapter accepts raw credentials", () => {
   it("has no option named like a secret", () => {
     // A guard against regressions: an API that invites secrets into browser
     // code is itself the vulnerability (SECURITY.md §1).
-    const sources = [s3Adapter, supabaseAdapter, appwriteAdapter, presignedAdapter]
+    const sources = [s3Adapter, supabaseAdapter, appwriteAdapter, presignedAdapter, firebaseAdapter]
       .map((fn) => fn.toString())
       .join("\n");
 
@@ -286,5 +287,125 @@ describe("no adapter accepts raw credentials", () => {
     ]) {
       expect(sources, forbidden).not.toContain(`options.${forbidden}`);
     }
+  });
+});
+
+describe("firebase adapter", () => {
+  /** A stand-in for `firebase/storage`, recording what it was asked to do. */
+  function fakeFirebase(fail?: { code?: string; message?: string }) {
+    const calls: { path: string; metadata: Record<string, unknown> }[] = [];
+    return {
+      calls,
+      deps: {
+        storage: { app: "test" },
+        ref: (_storage: object, path: string) => ({ path }),
+        uploadBytes: async (reference: object, _data: Blob, metadata?: Record<string, unknown>) => {
+          calls.push({ path: (reference as { path: string }).path, metadata: metadata ?? {} });
+          if (fail) throw Object.assign(new Error(fail.message ?? "nope"), { code: fail.code });
+          return {};
+        },
+      },
+    };
+  }
+
+  const item = (over: Partial<UploadItem> = {}): UploadItem => ({
+    jobId: "job_1",
+    name: "video_00001.m4s",
+    blob: new Blob([new Uint8Array(8)]),
+    contentType: "video/mp4",
+    isManifest: false,
+    ...over,
+  });
+
+  it("writes under the prefix", async () => {
+    const fb = fakeFirebase();
+    await firebaseAdapter({ ...fb.deps, prefix: "hls/user_9" })(item());
+    expect(fb.calls[0]!.path).toBe("hls/user_9/video_00001.m4s");
+  });
+
+  it("caches segments hard and playlists briefly", async () => {
+    const fb = fakeFirebase();
+    const upload = firebaseAdapter(fb.deps);
+
+    await upload(item());
+    await upload(item({ name: "video.m3u8", contentType: "application/vnd.apple.mpegurl", isManifest: true }));
+
+    // A segment never changes; a playlist is rewritten as the job progresses,
+    // and a cached one leaves players reading a stale segment list.
+    expect(fb.calls[0]!.metadata.cacheControl).toMatch(/immutable/);
+    expect(fb.calls[1]!.metadata.cacheControl).toBe("public, max-age=60");
+  });
+
+  it("passes the content type through, without which playback fails", async () => {
+    const fb = fakeFirebase();
+    await firebaseAdapter(fb.deps)(item());
+    expect(fb.calls[0]!.metadata.contentType).toBe("video/mp4");
+  });
+
+  it("treats a rules denial as permanent, so the queue stops retrying", async () => {
+    const fb = fakeFirebase({ code: "storage/unauthorized", message: "User does not have permission" });
+    await expect(firebaseAdapter(fb.deps)(item())).rejects.toBeInstanceOf(PermanentUploadError);
+  });
+
+  it("treats a transient failure as retryable", async () => {
+    const fb = fakeFirebase({ code: "storage/retry-limit-exceeded", message: "timeout" });
+    const error = await firebaseAdapter(fb.deps)(item()).catch((e) => e);
+    expect(error).toBeInstanceOf(Error);
+    expect(error).not.toBeInstanceOf(PermanentUploadError);
+  });
+
+  it("names the file in the error, so a failed batch says which one", async () => {
+    const fb = fakeFirebase({ code: "storage/unauthorized" });
+    await expect(firebaseAdapter(fb.deps)(item())).rejects.toThrow(/video_00001\.m4s/);
+  });
+
+  it("refuses a caller that forgot the firebase/storage functions", () => {
+    expect(() => firebaseAdapter({ storage: {} } as never)).toThrow(/ref.*uploadBytes/s);
+  });
+});
+
+describe("per-file headers on the pre-signed adapter", () => {
+  const item = (over: Partial<UploadItem> = {}): UploadItem => ({
+    jobId: "job_1",
+    name: "video_00001.m4s",
+    blob: new Blob([new Uint8Array(4)]),
+    contentType: "video/mp4",
+    isManifest: false,
+    ...over,
+  });
+
+  it("still accepts a fixed object, as Azure needs", async () => {
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => new Response(null, { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await presignedAdapter({
+      getUrl: () => "https://x.blob.core.windows.net/c/b?sig=abc",
+      headers: { "x-ms-blob-type": "BlockBlob" },
+    })(item());
+
+    const sent = fetchMock.mock.calls[0]![1] as RequestInit;
+    expect((sent.headers as Record<string, string>)["x-ms-blob-type"]).toBe("BlockBlob");
+    vi.unstubAllGlobals();
+  });
+
+  it("lets a playlist and a segment carry different cache lifetimes", async () => {
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => new Response(null, { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const upload = presignedAdapter({
+      getUrl: () => "https://example.com/o?sig=abc",
+      headers: (f) => ({
+        "Cache-Control": f.isManifest ? "public, max-age=60" : "public, max-age=31536000, immutable",
+      }),
+    });
+
+    await upload(item());
+    await upload(item({ isManifest: true, name: "video.m3u8" }));
+
+    const headerFor = (i: number) =>
+      fetchMock.mock.calls[i]![1]!.headers as Record<string, string>;
+    expect(headerFor(0)["Cache-Control"]).toMatch(/immutable/);
+    expect(headerFor(1)["Cache-Control"]).toBe("public, max-age=60");
+    vi.unstubAllGlobals();
   });
 });

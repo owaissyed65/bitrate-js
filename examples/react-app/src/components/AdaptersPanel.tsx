@@ -321,21 +321,18 @@ const upload = appwriteAdapter({
   {
     id: "firebase",
     name: "Firebase Storage",
-    note: "No dedicated adapter needed — the custom form is four lines.",
+    note: "Cache headers and permanent-vs-retryable errors are handled for you.",
     auth: "The signed-in Firebase user, with Security Rules deciding what they may write.",
     install: "npm install bitrate-js firebase",
     code: `import { getStorage, ref, uploadBytes } from "firebase/storage";
+import { firebaseAdapter } from "bitrate-js/adapters/firebase";
 
-const storage = getStorage(app);   // the user is already signed in
-
-const upload = async (item) => {
-  await uploadBytes(ref(storage, \`hls/\${userId}/\${item.name}\`), item.blob, {
-    contentType: item.contentType,
-    cacheControl: item.isManifest
-      ? "public, max-age=60"
-      : "public, max-age=31536000, immutable",
-  });
-};
+const upload = firebaseAdapter({
+  storage: getStorage(app),   // the user is already signed in
+  ref,
+  uploadBytes,
+  prefix: \`hls/\${user.uid}\`,
+});
 
 // ---- storage.rules ----
 match /hls/{userId}/{file} {
@@ -346,6 +343,11 @@ match /hls/{userId}/{file} {
       {
         title: "Rules replace RLS here",
         detail: "Without a matching rule the upload is rejected before it starts.",
+      },
+      {
+        title: "ref and uploadBytes are passed in",
+        detail:
+          "So the Firebase SDK never enters the bundle of anyone not using it. A storage/unauthorized failure is treated as permanent, so the queue skips the file instead of burning its retries.",
       },
     ],
   },

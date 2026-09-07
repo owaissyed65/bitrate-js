@@ -11,6 +11,7 @@ export default defineConfig([
       "src/adapters/s3.ts",
       "src/adapters/supabase.ts",
       "src/adapters/appwrite.ts",
+      "src/adapters/firebase.ts",
       "src/zip.ts",
     ],
     format: ["esm"],

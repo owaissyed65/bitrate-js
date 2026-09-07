@@ -21,8 +21,16 @@ export interface PresignedOptions {
   getUrl: (item: UploadItem) => Promise<string> | string;
   /** HTTP method the signature was issued for. Default `"PUT"`. */
   method?: "PUT" | "POST";
-  /** Extra headers. Must match whatever your signature covers. */
-  headers?: Record<string, string>;
+  /**
+   * Extra headers. Must match whatever your signature covers.
+   *
+   * A function receives the file, which is what lets a playlist and a segment
+   * carry different cache lifetimes — segments are immutable and a playlist is
+   * rewritten as the job progresses, so one value cannot suit both. Azure needs
+   * a fixed header here (`x-ms-blob-type: BlockBlob`), which the object form
+   * covers.
+   */
+  headers?: Record<string, string> | ((item: UploadItem) => Record<string, string>);
 }
 
 /** Strip the query string so signed URLs never leak into logs or error messages. */
@@ -37,11 +45,12 @@ export function presignedAdapter(opts: PresignedOptions): UploadAdapter {
 
   return async function upload(item: UploadItem): Promise<void> {
     const url = await opts.getUrl(item);
+    const extra = typeof opts.headers === "function" ? opts.headers(item) : opts.headers;
 
     const res = await fetch(url, {
       method,
       body: item.blob,
-      headers: { "Content-Type": item.contentType, ...opts.headers },
+      headers: { "Content-Type": item.contentType, ...extra },
       // Signed URLs carry their own auth; never attach ambient cookies.
       credentials: "omit",
       mode: "cors",

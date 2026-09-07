@@ -42,6 +42,38 @@ backend** — see [Your own server](#your-own-server).
 
 ---
 
+## What ships, and what it covers
+
+Every provider documented here is supported by code in the package — five shipped adapters,
+not eleven, because most of these speak one of two protocols. Nothing below asks you to
+write an uploader yourself.
+
+| Provider | Import | Why that one |
+|---|---|---|
+| AWS S3 | `bitrate-js/adapters/s3` | |
+| Cloudflare R2 | `bitrate-js/adapters/s3` | S3-compatible API |
+| Backblaze B2 | `bitrate-js/adapters/s3` | S3-compatible API |
+| MinIO | `bitrate-js/adapters/s3` | S3-compatible API |
+| DigitalOcean Spaces | `bitrate-js/adapters/s3` | S3-compatible API |
+| Azure Blob Storage | `bitrate-js/adapters/presigned` | SAS token is a signed URL |
+| Google Cloud Storage | `bitrate-js/adapters/presigned` | V4 signed URL |
+| Anything else with signed uploads | `bitrate-js/adapters/presigned` | |
+| Supabase Storage | `bitrate-js/adapters/supabase` | Own SDK and error shape |
+| Appwrite Storage | `bitrate-js/adapters/appwrite` | Own SDK; addresses files by id |
+| Firebase Storage | `bitrate-js/adapters/firebase` | Own SDK and error codes |
+| Your own server | `bitrate-js/adapters/presigned`, or a plain function | |
+
+A provider gets its own adapter only where the protocol differs. Five S3-compatible
+services sharing one adapter is not a gap — it is the same wire format, and a separate
+module per vendor would be five copies of one file to keep in step.
+
+Each adapter also does the two things easy to get wrong by hand: correct cache headers
+(segments immutable, playlists short-lived, since a playlist is rewritten as a job
+progresses) and telling a permanent failure from a retryable one, so a permissions error
+skips the file instead of consuming its retries.
+
+---
+
 ## Contents
 
 - [Pre-signed URL](#pre-signed-url) — the general answer
@@ -502,8 +534,7 @@ The same applies to any storage that does not serve files by path.
 
 ## Firebase Storage
 
-No dedicated adapter, but the custom form is four lines. Firebase Security Rules play the
-role RLS plays for Supabase.
+Firebase Security Rules play the role RLS plays for Supabase.
 
 ```bash
 npm install bitrate-js firebase
@@ -511,21 +542,24 @@ npm install bitrate-js firebase
 
 ```ts
 import { getStorage, ref, uploadBytes } from "firebase/storage";
+import { firebaseAdapter } from "bitrate-js/adapters/firebase";
 import { HlsQueue } from "bitrate-js";
 
-const storage = getStorage(app); // the user is already signed in
-
 const queue = new HlsQueue({
-  upload: async (item) => {
-    await uploadBytes(ref(storage, `hls/${userId}/${item.name}`), item.blob, {
-      contentType: item.contentType,
-      cacheControl: item.isManifest
-        ? "public, max-age=60"
-        : "public, max-age=31536000, immutable",
-    });
-  },
+  upload: firebaseAdapter({
+    storage: getStorage(app), // the user is already signed in
+    ref,
+    uploadBytes,
+    prefix: `hls/${user.uid}`,
+  }),
 });
 ```
+
+`ref` and `uploadBytes` are passed in rather than imported, so the Firebase SDK never
+enters the bundle of anyone who does not use it. The adapter sets the cache headers below
+and classifies failures: `storage/unauthorized` and the other rule- or configuration-level
+codes are permanent, so the queue skips that file instead of spending its retries on an
+answer that will not change.
 
 ```js
 // storage.rules

@@ -259,11 +259,19 @@ presignedAdapter({ getUrl: (i) => fetch(`/api/sign?f=${i.name}`).then(r => r.tex
 s3Adapter({ client: appS3Client, putObjectCommand: PutObjectCommand, bucket: "videos" })
 ```
 
-| Provider | Correct client-side auth |
-|---|---|
-| S3 / R2 / B2 / MinIO / Spaces | Pre-signed URL or STS temporary credentials |
-| Supabase | `anon` key + Row Level Security on the bucket |
-| Appwrite | Session-scoped client + bucket permissions |
+| Provider | Import | Correct client-side auth |
+|---|---|---|
+| S3 / R2 / B2 / MinIO / Spaces | `adapters/s3` | Pre-signed URL or STS temporary credentials |
+| Azure Blob / Google Cloud Storage | `adapters/presigned` | SAS or V4 signed URL from your backend |
+| Supabase | `adapters/supabase` | `anon` key + Row Level Security on the bucket |
+| Appwrite | `adapters/appwrite` | Session-scoped client + bucket permissions |
+| Firebase | `adapters/firebase` | Signed-in user + Security Rules |
+| Anything else | `adapters/presigned` | A short-lived signed URL |
+
+Five adapters cover all of it: the S3-compatible services share one, and signed-URL
+storage shares another. Each handles cache headers (segments immutable, playlists
+short-lived) and tells a permanent failure from a retryable one, so a permissions error
+skips that file rather than consuming its retries.
 
 Complete configuration for every provider — including CORS, cache headers and the settings
 people usually miss — is in **[ADAPTERS.md](ADAPTERS.md)**.
