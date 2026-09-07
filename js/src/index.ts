@@ -116,6 +116,7 @@ export {
   codecStringFromAvcC,
   levelForFrame,
   DEFAULT_LADDER,
+  LADDERS,
 } from "./transcode.js";
 export type { TranscodeOptions } from "./transcode.js";
 

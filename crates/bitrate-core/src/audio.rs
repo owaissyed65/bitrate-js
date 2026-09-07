@@ -76,6 +76,7 @@ pub fn parse_mp4a(sample_entry: &[u8]) -> Option<AacConfig> {
     r.u16()?; // sample size
     r.u16()?; // pre_defined
     r.u16()?; // reserved
+
     // Sample rate is 16.16 fixed point; the fraction is always zero here.
     let sample_rate = u32::from(r.u16()?);
     r.u16()?;

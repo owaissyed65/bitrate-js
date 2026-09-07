@@ -151,7 +151,10 @@ pub fn boxes(buf: &[u8]) -> Vec<BoxHeader<'_>> {
 
 /// Payload of the first child box named `kind`.
 pub fn find<'a>(buf: &'a [u8], kind: &[u8; 4]) -> Option<&'a [u8]> {
-    boxes(buf).into_iter().find(|b| b.is(kind)).map(|b| b.payload)
+    boxes(buf)
+        .into_iter()
+        .find(|b| b.is(kind))
+        .map(|b| b.payload)
 }
 
 /// Walk a chain of nested container boxes.

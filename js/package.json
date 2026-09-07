@@ -1,6 +1,6 @@
 {
   "name": "bitrate-js",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "Client-side HLS / adaptive-bitrate video packager. Chunk, transcode and upload large videos entirely in the browser — Rust/WASM + WebCodecs, no server.",
   "keywords": [
     "hls",
@@ -8,13 +8,38 @@
     "adaptive-bitrate",
     "video",
     "transcode",
+    "transcoder",
+    "remux",
     "webcodecs",
     "wasm",
+    "webassembly",
+    "rust",
     "streaming",
+    "video-streaming",
     "client-side",
-    "fmp4"
+    "browser",
+    "fmp4",
+    "cmaf",
+    "m3u8",
+    "m4s",
+    "mp4",
+    "h264",
+    "segmenter",
+    "chunking",
+    "video-upload",
+    "ffmpeg-alternative",
+    "serverless"
   ],
   "license": "MIT",
+  "homepage": "https://github.com/OWNER/bitrate#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/OWNER/bitrate.git",
+    "directory": "js"
+  },
+  "bugs": {
+    "url": "https://github.com/OWNER/bitrate/issues"
+  },
   "type": "module",
   "sideEffects": false,
   "engines": {
@@ -55,7 +80,8 @@
     "build": "npm run build:wasm && tsup",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "prepublishOnly": "npm run build && npm run test"
+    "sync:readme": "node scripts/sync-readme.mjs",
+    "prepublishOnly": "npm run sync:readme && npm run build && npm run typecheck && npm run test"
   },
   "peerDependencies": {
     "@aws-sdk/client-s3": ">=3",
@@ -82,7 +108,6 @@
     "vitest": "^2.1.8"
   },
   "publishConfig": {
-    "access": "public",
-    "provenance": true
+    "access": "public"
   }
 }

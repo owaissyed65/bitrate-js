@@ -39,7 +39,9 @@ impl core::fmt::Display for DemuxError {
             Self::NoMoov => f.write_str("no moov box found; is this an MP4?"),
             Self::NoVideoTrack => f.write_str("no supported H.264 video track found"),
             Self::MalformedBox(b) => write!(f, "malformed or truncated `{b}` box"),
-            Self::TooLarge => f.write_str("file declares more samples than this build will process"),
+            Self::TooLarge => {
+                f.write_str("file declares more samples than this build will process")
+            }
             Self::InconsistentTables => f.write_str("sample tables are inconsistent"),
             Self::FragmentedMp4 => f.write_str(
                 "this is a fragmented MP4 (its moov declares no samples); \

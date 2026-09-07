@@ -229,11 +229,7 @@ fn trun_data_offset_points_at_the_first_sample_byte() {
     // data_offset is relative to the start of the moof.
     let absolute = styp_size + data_offset;
     let mdat_start = styp_size + moof_size;
-    assert_eq!(
-        absolute,
-        mdat_start + 8,
-        "sample data must begin just past the mdat header"
-    );
+    assert_eq!(absolute, mdat_start + 8, "sample data must begin just past the mdat header");
 }
 
 #[test]
@@ -620,7 +616,13 @@ fn without_audio_the_init_segment_is_unchanged() {
     let init = s.init_segment();
     let moov = child(&init, "moov");
     assert_eq!(boxes(moov).iter().filter(|(k, _)| k == "trak").count(), 1);
-    assert_eq!(boxes(child(moov, "mvex")).iter().filter(|(k, _)| k == "trex").count(), 1);
+    assert_eq!(
+        boxes(child(moov, "mvex"))
+            .iter()
+            .filter(|(k, _)| k == "trex")
+            .count(),
+        1
+    );
 }
 
 #[test]
@@ -628,7 +630,8 @@ fn segments_carry_both_tracks() {
     let mut s = segmenter_with_audio(1.0);
     let _ = s.init_segment();
     for i in 0..60 {
-        s.add_sample(&[0xaa; 100], FRAME, i % 30 == 0, 0).expect("video");
+        s.add_sample(&[0xaa; 100], FRAME, i % 30 == 0, 0)
+            .expect("video");
         s.add_audio_sample(&[0xbb; 40], AUDIO_FRAME).expect("audio");
     }
     s.finish();
@@ -692,7 +695,8 @@ fn audio_timeline_advances_in_its_own_timescale() {
     let mut s = segmenter_with_audio(1.0);
     // 1s of video per segment; 30 audio frames of 1024 samples per segment.
     for i in 0..60 {
-        s.add_sample(&[0xaa; 50], FRAME, i % 30 == 0, 0).expect("video");
+        s.add_sample(&[0xaa; 50], FRAME, i % 30 == 0, 0)
+            .expect("video");
         s.add_audio_sample(&[0xbb; 20], AUDIO_FRAME).expect("audio");
     }
     s.finish();

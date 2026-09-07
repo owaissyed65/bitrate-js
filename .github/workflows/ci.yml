@@ -1,0 +1,100 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Nothing here writes anywhere; publishing lives in release.yml.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    name: Rust core
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # rustup reads rust-toolchain.toml and installs the pinned 1.84.0
+      # plus the wasm32 target on first use, so no toolchain action is needed
+      # and no third-party action gets to see this repository.
+      - name: Show toolchain
+        run: rustc --version && cargo --version
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+
+  js:
+    name: Package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: js/package-lock.json
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-wasm-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+
+      # The prebuilt binary; `cargo install wasm-pack` compiles for minutes.
+      - run: npm install -g wasm-pack
+
+      - run: npm ci
+        working-directory: js
+
+      - run: npm run build
+        working-directory: js
+
+      - run: npm run typecheck
+        working-directory: js
+
+      - run: npm test
+        working-directory: js
+
+      # Catches a README or LICENSE that drifted from the repository copies.
+      - name: README is in sync
+        working-directory: js
+        run: |
+          npm run sync:readme
+          git diff --exit-code -- README.md LICENSE
+
+      # Fails loudly if a file that should ship stopped shipping.
+      - name: Package contents
+        working-directory: js
+        run: npm pack --dry-run
+
+  showcase:
+    name: Showcase builds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm install -g wasm-pack
+      - run: npm ci && npm run build
+        working-directory: js
+      - run: npm install && npm run build
+        working-directory: examples/react-app

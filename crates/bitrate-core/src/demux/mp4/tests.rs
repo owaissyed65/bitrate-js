@@ -328,7 +328,12 @@ fn reports_missing_tables_instead_of_panicking() {
     let moov = moov_with(
         b"vide",
         1000,
-        vec![stsd(&avc1(640, 480, AVCC)), stts(&[(1, 100)]), stsc(&[(1, 1)]), stco(&[0])],
+        vec![
+            stsd(&avc1(640, 480, AVCC)),
+            stts(&[(1, 100)]),
+            stsc(&[(1, 1)]),
+            stco(&[0]),
+        ],
     );
     assert_eq!(parse_video(&moov), Err(DemuxError::MalformedBox("stsz")));
 }
@@ -343,7 +348,13 @@ fn rejects_a_stsz_claiming_more_samples_than_the_box_holds() {
     let moov = moov_with(
         b"vide",
         1000,
-        vec![stsd(&avc1(640, 480, AVCC)), bad_stsz, stts(&[(1, 100)]), stsc(&[(1, 1)]), stco(&[0])],
+        vec![
+            stsd(&avc1(640, 480, AVCC)),
+            bad_stsz,
+            stts(&[(1, 100)]),
+            stsc(&[(1, 1)]),
+            stco(&[0]),
+        ],
     );
     assert_eq!(parse_video(&moov), Err(DemuxError::MalformedBox("stsz")));
 }
@@ -357,7 +368,13 @@ fn rejects_an_absurd_sample_count() {
     let moov = moov_with(
         b"vide",
         1000,
-        vec![stsd(&avc1(640, 480, AVCC)), bomb, stts(&[(1, 100)]), stsc(&[(1, 1)]), stco(&[0])],
+        vec![
+            stsd(&avc1(640, 480, AVCC)),
+            bomb,
+            stts(&[(1, 100)]),
+            stsc(&[(1, 1)]),
+            stco(&[0]),
+        ],
     );
     assert_eq!(parse_video(&moov), Err(DemuxError::TooLarge));
 }
@@ -383,7 +400,12 @@ fn rejects_missing_chunk_offsets() {
     let moov = moov_with(
         b"vide",
         1000,
-        vec![stsd(&avc1(640, 480, AVCC)), stsz_uniform(10, 1), stts(&[(1, 100)]), stsc(&[(1, 1)])],
+        vec![
+            stsd(&avc1(640, 480, AVCC)),
+            stsz_uniform(10, 1),
+            stts(&[(1, 100)]),
+            stsc(&[(1, 1)]),
+        ],
     );
     assert_eq!(parse_video(&moov), Err(DemuxError::MalformedBox("stco")));
 }
@@ -399,7 +421,13 @@ fn rejects_a_track_with_no_avcc() {
     let moov = moov_with(
         b"vide",
         1000,
-        vec![stsd(&no_avcc), stsz_uniform(10, 1), stts(&[(1, 100)]), stsc(&[(1, 1)]), stco(&[0])],
+        vec![
+            stsd(&no_avcc),
+            stsz_uniform(10, 1),
+            stts(&[(1, 100)]),
+            stsc(&[(1, 1)]),
+            stco(&[0]),
+        ],
     );
     assert_eq!(parse_video(&moov), Err(DemuxError::MalformedBox("avcC")));
 }
@@ -409,7 +437,13 @@ fn rejects_zero_timescale() {
     let moov = moov_with(
         b"vide",
         0,
-        vec![stsd(&avc1(640, 480, AVCC)), stsz_uniform(10, 1), stts(&[(1, 100)]), stsc(&[(1, 1)]), stco(&[0])],
+        vec![
+            stsd(&avc1(640, 480, AVCC)),
+            stsz_uniform(10, 1),
+            stts(&[(1, 100)]),
+            stsc(&[(1, 1)]),
+            stco(&[0]),
+        ],
     );
     assert_eq!(parse_video(&moov), Err(DemuxError::MalformedBox("mdhd")));
 }
@@ -419,7 +453,13 @@ fn empty_stsc_is_reported_not_panicked() {
     let moov = moov_with(
         b"vide",
         1000,
-        vec![stsd(&avc1(640, 480, AVCC)), stsz_uniform(10, 2), stts(&[(2, 100)]), stsc(&[]), stco(&[0])],
+        vec![
+            stsd(&avc1(640, 480, AVCC)),
+            stsz_uniform(10, 2),
+            stts(&[(2, 100)]),
+            stsc(&[]),
+            stco(&[0]),
+        ],
     );
     assert_eq!(parse_video(&moov), Err(DemuxError::InconsistentTables));
 }
@@ -459,11 +499,15 @@ fn mp4a(channels: u16, sample_rate: u32) -> Vec<u8> {
     p.extend_from_slice(&16u16.to_be_bytes()); // samplesize
     p.extend_from_slice(&[0u8; 4]); // pre_defined + reserved
     p.extend_from_slice(&(sample_rate << 16).to_be_bytes()); // 16.16 fixed
+
     // A small, well-formed esds carrying an AudioSpecificConfig.
     p.extend_from_slice(&full(
         b"esds",
         0,
-        &[0x03, 0x0d, 0x00, 0x01, 0x00, 0x04, 0x05, 0x40, 0x15, 0x00, 0x00, 0x00, 0x05, 0x02, 0x12, 0x10],
+        &[
+            0x03, 0x0d, 0x00, 0x01, 0x00, 0x04, 0x05, 0x40, 0x15, 0x00, 0x00, 0x00, 0x05, 0x02,
+            0x12, 0x10,
+        ],
     ));
     bx(b"mp4a", &p)
 }
@@ -538,7 +582,12 @@ fn a_broken_audio_track_does_not_sink_the_video() {
     let broken = moov_with(
         b"soun",
         44_100,
-        vec![stsd(&mp4a(2, 44_100)), stts(&[(1, 1024)]), stsc(&[(1, 1)]), stco(&[0])],
+        vec![
+            stsd(&mp4a(2, 44_100)),
+            stts(&[(1, 1024)]),
+            stsc(&[(1, 1)]),
+            stco(&[0]),
+        ],
     );
     let movie = parse_moov(&cat(&[simple_moov(3), broken])).expect("video should still parse");
     assert_eq!(movie.video.samples.len(), 3);

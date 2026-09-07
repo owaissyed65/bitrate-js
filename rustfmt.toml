@@ -1,0 +1,6 @@
+# The default `fn_call_width` of 60 wraps assertions and constructor calls that
+# read perfectly well on one line, which in test-heavy code costs more clarity
+# than it buys. Only genuinely long lines are wrapped.
+max_width = 100
+fn_call_width = 90
+attr_fn_like_width = 90

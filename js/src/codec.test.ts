@@ -10,7 +10,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { codecStringFromAvcC, levelForFrame, planLadder } from "./transcode.js";
+import { codecStringFromAvcC, LADDERS, levelForFrame, planLadder } from "./transcode.js";
 
 /** Build an avcC header with the given profile, constraints and level. */
 function avcC(profile: number, constraints: number, level: number): Uint8Array {
@@ -112,5 +112,45 @@ describe("planning a ladder for a real source", () => {
     const plan = planLadder([{ height: 720, bitrate: 2_800_000 }], 1920, 1080);
     const rung = plan[0]!;
     expect(Math.abs(rung.width / rung.height - 1920 / 1080)).toBeLessThan(0.01);
+  });
+});
+
+describe("ladder presets", () => {
+  it("offers a preset for each common shape", () => {
+    expect(Object.keys(LADDERS).sort()).toEqual(["mobile", "single", "standard", "uhd", "wide"]);
+  });
+
+  it("orders every preset from highest to lowest quality", () => {
+    for (const [name, ladder] of Object.entries(LADDERS)) {
+      const heights = ladder.map((r) => r.height);
+      expect([...heights].sort((a, b) => b - a), name).toEqual(heights);
+      // Bitrate should fall with resolution, or the ladder makes no sense.
+      const rates = ladder.map((r) => r.bitrate);
+      expect([...rates].sort((a, b) => b - a), name).toEqual(rates);
+    }
+  });
+
+  it("can be handed any source, since taller rungs are dropped", () => {
+    // A 480p phone clip against the 4K preset should still produce something.
+    const plan = planLadder(LADDERS.uhd, 854, 480);
+    expect(plan.length).toBeGreaterThan(0);
+    expect(plan.every((r) => r.height <= 480)).toBe(true);
+  });
+
+  it("keeps the rungs a source can actually fill", () => {
+    const plan = planLadder(LADDERS.standard, 1920, 1080);
+    expect(plan.map((r) => r.height)).toEqual([1080, 720, 480]);
+  });
+});
+
+describe("upscaling", () => {
+  it("is refused by default", () => {
+    const plan = planLadder(LADDERS.standard, 854, 480);
+    expect(plan.every((r) => r.height <= 480)).toBe(true);
+  });
+
+  it("can be allowed when a fixed set of renditions matters more", () => {
+    const plan = planLadder(LADDERS.standard, 854, 480, true);
+    expect(plan.map((r) => r.height)).toEqual([1080, 720, 480]);
   });
 });

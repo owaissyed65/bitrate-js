@@ -25,7 +25,10 @@ pub(super) fn build(cfg: &TrackConfig, audio: Option<&AudioTrackConfig>) -> Vec<
 fn ftyp(w: &mut BoxWriter) {
     w.boxed(b"ftyp", |w| {
         w.bytes(b"iso6").u32(1);
-        w.bytes(b"iso6").bytes(b"cmfc").bytes(b"dash").bytes(b"mp41");
+        w.bytes(b"iso6")
+            .bytes(b"cmfc")
+            .bytes(b"dash")
+            .bytes(b"mp41");
     });
 }
 
@@ -43,7 +46,11 @@ fn moov(w: &mut BoxWriter, cfg: &TrackConfig, audio: Option<&AudioTrackConfig>) 
 /// Movie header. `duration` is 0 because a fragmented file's length is not
 /// known up front.
 fn mvhd(w: &mut BoxWriter, cfg: &TrackConfig, has_audio: bool) {
-    let next_track_id = if has_audio { AUDIO_TRACK_ID + 1 } else { TRACK_ID + 1 };
+    let next_track_id = if has_audio {
+        AUDIO_TRACK_ID + 1
+    } else {
+        TRACK_ID + 1
+    };
     w.full_boxed(b"mvhd", 0, 0, |w| {
         w.u32(0) // creation_time
             .u32(0) // modification_time
@@ -283,6 +290,7 @@ fn audio_stbl(w: &mut BoxWriter, cfg: &AudioTrackConfig) {
     w.boxed(b"stbl", |w| {
         w.full_boxed(b"stsd", 0, 0, |w| {
             w.u32(1); // entry_count
+
             // The complete sample entry box, copied from the source.
             w.bytes(&cfg.sample_entry);
         });

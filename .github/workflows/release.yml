@@ -1,0 +1,52 @@
+name: Release
+
+# Publishing is deliberately tag-driven rather than push-driven: a release
+# should be an explicit act, not a side effect of merging.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+  # Required for npm provenance — the OIDC token proves to the registry which
+  # workflow, commit and repository produced the tarball. Consumers can then
+  # verify the published bytes came from this source, not from someone's laptop.
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: npm
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+          cache: npm
+          cache-dependency-path: js/package-lock.json
+
+      - run: npm install -g wasm-pack
+
+      - run: npm ci
+        working-directory: js
+
+      # The tag is the source of truth; a mismatch means the tag was pushed
+      # without bumping package.json, which would publish the wrong version.
+      - name: Tag matches package version
+        working-directory: js
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg="$(node -p 'require("./package.json").version')"
+          if [ "$tag" != "$pkg" ]; then
+            echo "tag v$tag does not match package.json $pkg" >&2
+            exit 1
+          fi
+
+      # prepublishOnly runs sync:readme, build, typecheck and the test suite.
+      - name: Publish
+        working-directory: js
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

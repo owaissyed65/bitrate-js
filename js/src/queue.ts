@@ -50,6 +50,14 @@ export interface HlsQueueOptions {
   ladder?: Rung[];
   /** AAC bitrate when transcoding audio. Default 128 kbps. */
   audioBitrate?: number;
+  /** H.264 profile preference for transcoding. See { TranscodeOptions}. */
+  profile?: TranscodeOptions["profile"];
+  /** Hardware encoder preference for transcoding. */
+  hardwareAcceleration?: TranscodeOptions["hardwareAcceleration"];
+  /** Encoder speed/quality trade for transcoding. */
+  latencyMode?: TranscodeOptions["latencyMode"];
+  /** Allow rungs taller than the source. Default false. */
+  allowUpscale?: boolean;
   /** Minimum segment length in seconds. Default 6. */
   segmentDuration?: number;
   /** Files processed simultaneously. Default 1 — raise with care. */
@@ -329,6 +337,14 @@ export class HlsQueue {
     if (this.#options.ladder) transcodeOptions.ladder = this.#options.ladder;
     if (this.#options.audioBitrate !== undefined) {
       transcodeOptions.audioBitrate = this.#options.audioBitrate;
+    }
+    if (this.#options.profile) transcodeOptions.profile = this.#options.profile;
+    if (this.#options.hardwareAcceleration) {
+      transcodeOptions.hardwareAcceleration = this.#options.hardwareAcceleration;
+    }
+    if (this.#options.latencyMode) transcodeOptions.latencyMode = this.#options.latencyMode;
+    if (this.#options.allowUpscale !== undefined) {
+      transcodeOptions.allowUpscale = this.#options.allowUpscale;
     }
     if (this.#options.readWindow !== undefined) {
       transcodeOptions.readWindow = this.#options.readWindow;

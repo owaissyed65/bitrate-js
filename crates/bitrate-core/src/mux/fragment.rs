@@ -50,7 +50,9 @@ pub(super) fn build(
     audio: Option<TrackRun<'_>>,
 ) -> Vec<u8> {
     let media_len: usize = video.samples.iter().map(|s| s.data.len()).sum::<usize>()
-        + audio.as_ref().map_or(0, |a| a.samples.iter().map(|s| s.data.len()).sum());
+        + audio
+            .as_ref()
+            .map_or(0, |a| a.samples.iter().map(|s| s.data.len()).sum());
     let sample_count = video.samples.len() + audio.as_ref().map_or(0, |a| a.samples.len());
 
     let mut w = BoxWriter::with_capacity(media_len + 512 + sample_count * 16);

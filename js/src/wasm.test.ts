@@ -4,6 +4,7 @@
  * boundary (not just inside Rust).
  */
 
+import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
@@ -15,6 +16,17 @@ import init, {
   version,
 } from "./wasm/bitrate_core.js";
 
+/** The version Cargo.toml declares, read rather than duplicated. */
+function cargoVersion(): string {
+  const manifest = readFileSync(
+    fileURLToPath(new URL("../../crates/bitrate-core/Cargo.toml", import.meta.url)),
+    "utf8",
+  );
+  const match = /^version\s*=\s*"([^"]+)"/m.exec(manifest);
+  if (!match?.[1]) throw new Error("no version in crates/bitrate-core/Cargo.toml");
+  return match[1];
+}
+
 beforeAll(async () => {
   // wasm-pack's `web` target fetches by URL in a browser; in Node we hand it bytes.
   const wasmPath = fileURLToPath(new URL("./wasm/bitrate_core_bg.wasm", import.meta.url));
@@ -23,7 +35,11 @@ beforeAll(async () => {
 
 describe("wasm round-trip", () => {
   it("returns the crate version as a string", () => {
-    expect(version()).toBe("0.0.1");
+    // Deliberately not pinned to a literal: the point is that the string
+    // crosses the boundary intact and reflects Cargo.toml, and pinning it
+    // would fail on every release for no reason.
+    expect(version()).toMatch(/^\d+\.\d+\.\d+/);
+    expect(version()).toBe(cargoVersion());
   });
 
   it("transfers byte buffers intact", () => {

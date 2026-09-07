@@ -1,6 +1,6 @@
 [package]
 name = "bitrate-core"
-version = "0.0.1"
+version = "0.1.0"
 edition = "2021"
 license = "MIT"
 description = "Client-side HLS segmenter and manifest generator (WASM core for the `bitrate` npm package)"

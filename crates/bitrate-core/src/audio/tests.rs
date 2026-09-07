@@ -77,7 +77,9 @@ fn the_entry_contains_an_esds() {
 #[test]
 fn the_specific_config_appears_verbatim() {
     let entry = build_mp4a(&config(), 128_000);
-    let found = entry.windows(ASC_STEREO_44K.len()).any(|w| w == ASC_STEREO_44K);
+    let found = entry
+        .windows(ASC_STEREO_44K.len())
+        .any(|w| w == ASC_STEREO_44K);
     assert!(found, "the AudioSpecificConfig must survive unaltered");
 }
 
@@ -94,15 +96,18 @@ fn the_bitrate_is_recorded() {
 /// against something this module did not produce.
 fn handwritten_mp4a() -> Vec<u8> {
     let mut esds_payload = vec![0u8, 0, 0, 0]; // version + flags
+
     // ES_Descriptor
     esds_payload.extend([0x03, 0x19]);
     esds_payload.extend([0x00, 0x01, 0x00]); // ES_ID, flags
+
     // DecoderConfigDescriptor
     esds_payload.extend([0x04, 0x11]);
     esds_payload.extend([0x40, 0x15]); // AAC, audio
     esds_payload.extend([0x00, 0x00, 0x00]); // bufferSizeDB
     esds_payload.extend(0x0001_f400u32.to_be_bytes()); // maxBitrate
     esds_payload.extend(0x0001_f400u32.to_be_bytes()); // avgBitrate
+
     // DecoderSpecificInfo
     esds_payload.extend([0x05, 0x02]);
     esds_payload.extend(ASC_STEREO_44K);

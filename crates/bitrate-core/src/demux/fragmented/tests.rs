@@ -97,14 +97,19 @@ fn reads_trex_defaults_for_every_track() {
     trex2.extend(u32b(200));
     trex2.extend(u32b(0));
 
-    let mvex = bx(
-        b"mvex",
-        &cat(&[full(b"trex", 0, 0, &trex1), full(b"trex", 0, 0, &trex2)]),
-    );
+    let mvex = bx(b"mvex", &cat(&[full(b"trex", 0, 0, &trex1), full(b"trex", 0, 0, &trex2)]));
 
     let defaults = parse_trex(&mvex);
     assert_eq!(defaults.len(), 2);
-    assert_eq!(defaults[0], TrackDefaults { track_id: 1, duration: 3000, size: 500, flags: 0 });
+    assert_eq!(
+        defaults[0],
+        TrackDefaults {
+            track_id: 1,
+            duration: 3000,
+            size: 500,
+            flags: 0
+        }
+    );
     assert_eq!(defaults[1].track_id, 2);
     assert_eq!(defaults[1].duration, 1024);
 }
@@ -141,6 +146,7 @@ fn sample_offsets_are_relative_to_the_moof() {
 fn an_explicit_base_data_offset_wins_over_the_moof_position() {
     let mut p = u32b(1);
     p.extend(900_000u64.to_be_bytes()); // base_data_offset
+
     // base-data-offset-present | default-base-is-moof
     let tfhd = full(b"tfhd", 0, 0x02_0001, &p);
 
@@ -191,7 +197,12 @@ fn missing_fields_fall_back_to_the_tfhd_defaults() {
 
 #[test]
 fn missing_fields_fall_back_to_trex_when_the_fragment_omits_them() {
-    let defaults = [TrackDefaults { track_id: 1, duration: 1024, size: 200, flags: 0 }];
+    let defaults = [TrackDefaults {
+        track_id: 1,
+        duration: 1024,
+        size: 200,
+        flags: 0,
+    }];
 
     // Only a trun with sizes; duration and flags must come from trex.
     let fragment = moof(vec![bx(
@@ -207,13 +218,15 @@ fn missing_fields_fall_back_to_trex_when_the_fragment_omits_them() {
 
 #[test]
 fn a_tfhd_default_overrides_the_trex_default() {
-    let defaults = [TrackDefaults { track_id: 1, duration: 1024, size: 200, flags: 0 }];
+    let defaults = [TrackDefaults {
+        track_id: 1,
+        duration: 1024,
+        size: 200,
+        flags: 0,
+    }];
     let fragment = moof(vec![bx(
         b"traf",
-        &cat(&[
-            tfhd_with_defaults(1, 3000, 0, 0),
-            trun_sizes_only(0, &[10]),
-        ]),
+        &cat(&[tfhd_with_defaults(1, 3000, 0, 0), trun_sizes_only(0, &[10])]),
     )]);
 
     assert_eq!(parse_moof(&fragment, 0, &defaults)[0].samples[0].duration, 3000);
@@ -269,13 +282,13 @@ fn first_sample_flags_apply_only_to_the_first_sample() {
 #[test]
 fn separates_the_tracks_within_one_fragment() {
     let fragment = moof(vec![
+        bx(b"traf", &cat(&[tfhd_basic(1), trun_full(200, &[(3000, 100, SYNC)])])),
         bx(
             b"traf",
-            &cat(&[tfhd_basic(1), trun_full(200, &[(3000, 100, SYNC)])]),
-        ),
-        bx(
-            b"traf",
-            &cat(&[tfhd_basic(2), trun_full(300, &[(1024, 50, SYNC), (1024, 50, SYNC)])]),
+            &cat(&[
+                tfhd_basic(2),
+                trun_full(300, &[(1024, 50, SYNC), (1024, 50, SYNC)]),
+            ]),
         ),
     ]);
 

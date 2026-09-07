@@ -50,7 +50,87 @@ export interface TranscodeOptions {
   audio?: boolean;
   /** AAC bitrate when re-encoding audio. Default 128 kbps. */
   audioBitrate?: number;
+
+  /**
+   * Which H.264 profile to prefer.
+   *
+   * Each is tried in turn against `isConfigSupported`, so an unavailable
+   * preference falls back rather than failing.
+   *
+   * - `"main"` (default) — the broadly decodable middle ground.
+   * - `"high"` — better compression at the same bitrate; universal on anything
+   *   modern, but not on very old hardware decoders.
+   * - `"baseline"` — the most compatible and the least efficient. Worth it only
+   *   for genuinely old targets.
+   */
+  profile?: "main" | "high" | "baseline";
+
+  /**
+   * Whether to insist on a hardware encoder.
+   *
+   * `"prefer-hardware"` is dramatically faster where it exists. Software
+   * encoding of a long video in a tab is rarely practical, so
+   * `"prefer-software"` is mostly a debugging tool.
+   */
+  hardwareAcceleration?: HardwareAcceleration;
+
+  /**
+   * `"quality"` (default) spends more time per frame. `"realtime"` is faster
+   * and looks worse at the same bitrate — reasonable when the user is waiting.
+   */
+  latencyMode?: LatencyMode;
+
+  /**
+   * Allow rungs taller than the source. Default `false`.
+   *
+   * Upscaling costs encoding time and storage and adds no detail, so rungs
+   * above the source are normally dropped. Enable it only if a fixed set of
+   * renditions matters more than not wasting the work.
+   */
+  allowUpscale?: boolean;
 }
+
+/**
+ * Ready-made ladders.
+ *
+ * A ladder is a trade between how many renditions you store and how well
+ * playback adapts. Rungs above the source are dropped, so a preset can be
+ * handed any source without checking it first.
+ */
+export const LADDERS = {
+  /** One rung. Cheapest to produce and store; no adaptation. */
+  single: [{ height: 720, bitrate: 2_800_000 }],
+
+  /** Phone-friendly: small files, quick to encode, tolerant of poor networks. */
+  mobile: [
+    { height: 720, bitrate: 2_000_000 },
+    { height: 480, bitrate: 900_000 },
+    { height: 360, bitrate: 500_000 },
+  ],
+
+  /** The usual default: covers desktop down to mobile data. */
+  standard: [
+    { height: 1080, bitrate: 5_000_000 },
+    { height: 720, bitrate: 2_800_000 },
+    { height: 480, bitrate: 1_200_000 },
+  ],
+
+  /** Adds a low rung for genuinely bad connections. */
+  wide: [
+    { height: 1080, bitrate: 5_000_000 },
+    { height: 720, bitrate: 2_800_000 },
+    { height: 480, bitrate: 1_200_000 },
+    { height: 360, bitrate: 600_000 },
+  ],
+
+  /** For 4K sources. Expensive to encode — expect real time. */
+  uhd: [
+    { height: 2160, bitrate: 16_000_000 },
+    { height: 1440, bitrate: 10_000_000 },
+    { height: 1080, bitrate: 5_000_000 },
+    { height: 720, bitrate: 2_800_000 },
+  ],
+} satisfies Record<string, Rung[]>;
 
 /** A sensible default ladder for 16:9 content. */
 export const DEFAULT_LADDER: Rung[] = [
@@ -125,20 +205,35 @@ async function resolveEncoderConfig(
   height: number,
   bitrate: number,
   framerate: number,
+  options: {
+    profile?: "main" | "high" | "baseline";
+    hardwareAcceleration?: HardwareAcceleration;
+    latencyMode?: LatencyMode;
+  } = {},
 ): Promise<VideoEncoderConfig> {
   const level = levelForFrame(width, height, framerate).toString(16).padStart(2, "0");
-  const candidates = [`avc1.4d00${level}`, `avc1.6400${level}`, `avc1.4200${level}`];
+
+  // Profile is the first two bytes of the codec string.
+  const byProfile = { main: "4d00", high: "6400", baseline: "4200" } as const;
+  const preferred = byProfile[options.profile ?? "main"];
+  // The preference first, then the rest as fallbacks: a preference that this
+  // browser cannot honour should degrade rather than fail.
+  const order = [preferred, ...Object.values(byProfile).filter((p) => p !== preferred)];
 
   const attempted: string[] = [];
-  for (const codec of candidates) {
+  for (const prefix of order) {
+    const codec = `avc1.${prefix}${level}`;
     const config: VideoEncoderConfig = {
       codec,
       width,
       height,
       bitrate,
       framerate,
-      latencyMode: "quality",
+      latencyMode: options.latencyMode ?? "quality",
       avc: { format: "avc" },
+      ...(options.hardwareAcceleration
+        ? { hardwareAcceleration: options.hardwareAcceleration }
+        : {}),
     };
     try {
       const support = await VideoEncoder.isConfigSupported(config);
@@ -165,8 +260,9 @@ export function planLadder(
   ladder: readonly Rung[],
   sourceWidth: number,
   sourceHeight: number,
+  allowUpscale = false,
 ): { width: number; height: number; bitrate: number }[] {
-  const usable = ladder.filter((r) => r.height <= sourceHeight);
+  const usable = allowUpscale ? [...ladder] : ladder.filter((r) => r.height <= sourceHeight);
   // If every rung is taller than the source, keep the source resolution at the
   // lowest requested bitrate rather than producing nothing.
   const rungs = usable.length > 0 ? usable : [{ height: sourceHeight, bitrate: lowestBitrate(ladder) }];
@@ -403,6 +499,10 @@ export async function* transcode(
     onProgress,
     audio: wantAudio = true,
     audioBitrate = DEFAULT_AUDIO_BITRATE,
+    profile,
+    hardwareAcceleration,
+    latencyMode,
+    allowUpscale = false,
   } = options;
 
   await ensureWasm();
@@ -447,7 +547,7 @@ export async function* transcode(
   const framerate =
     totalTicks > 0 ? Math.round(samples.length / (totalTicks / sourceTimescale)) || 30 : 30;
 
-  const plan = planLadder(ladder, sourceWidth, sourceHeight);
+  const plan = planLadder(ladder, sourceWidth, sourceHeight, allowUpscale);
   const rungs: RungPipeline[] = [];
   let audioPipeline: AudioPipeline | null = null;
 
@@ -456,7 +556,13 @@ export async function* transcode(
     // unsupported ladder fails with a clear message instead of surfacing later
     // as an error from a closed codec.
     const configs = await Promise.all(
-      plan.map((rung) => resolveEncoderConfig(rung.width, rung.height, rung.bitrate, framerate)),
+      plan.map((rung) =>
+        resolveEncoderConfig(rung.width, rung.height, rung.bitrate, framerate, {
+          ...(profile ? { profile } : {}),
+          ...(hardwareAcceleration ? { hardwareAcceleration } : {}),
+          ...(latencyMode ? { latencyMode } : {}),
+        }),
+      ),
     );
 
     // Set the audio up first: its sample entry has to exist before any

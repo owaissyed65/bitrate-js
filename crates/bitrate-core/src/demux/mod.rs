@@ -124,7 +124,12 @@ impl Mp4Demuxer {
     /// Total track duration in seconds.
     #[wasm_bindgen(getter)]
     pub fn duration(&self) -> f64 {
-        let ticks: u64 = self.track.samples.iter().map(|s| u64::from(s.duration)).sum();
+        let ticks: u64 = self
+            .track
+            .samples
+            .iter()
+            .map(|s| u64::from(s.duration))
+            .sum();
         ticks as f64 / f64::from(self.track.timescale.max(1))
     }
 
@@ -152,13 +157,21 @@ impl Mp4Demuxer {
     /// `1` for a keyframe, `0` otherwise.
     #[wasm_bindgen(js_name = sampleSyncFlags)]
     pub fn sample_sync_flags(&self) -> Vec<u8> {
-        self.track.samples.iter().map(|s| u8::from(s.is_sync)).collect()
+        self.track
+            .samples
+            .iter()
+            .map(|s| u8::from(s.is_sync))
+            .collect()
     }
 
     /// Composition offset of each sample.
     #[wasm_bindgen(js_name = sampleCompositionOffsets)]
     pub fn sample_composition_offsets(&self) -> Vec<i32> {
-        self.track.samples.iter().map(|s| s.composition_offset).collect()
+        self.track
+            .samples
+            .iter()
+            .map(|s| s.composition_offset)
+            .collect()
     }
 
     // ---- audio track ------------------------------------------------------
@@ -178,7 +191,10 @@ impl Mp4Demuxer {
     /// The audio codec sample entry, ready to hand to `Fmp4Segmenter.setAudio`.
     #[wasm_bindgen(getter, js_name = audioSampleEntry)]
     pub fn audio_sample_entry(&self) -> Vec<u8> {
-        self.audio.as_ref().map(|a| a.sample_entry.clone()).unwrap_or_default()
+        self.audio
+            .as_ref()
+            .map(|a| a.sample_entry.clone())
+            .unwrap_or_default()
     }
 
     /// Number of audio frames.

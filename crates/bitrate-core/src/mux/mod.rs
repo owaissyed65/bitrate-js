@@ -68,10 +68,10 @@ impl core::fmt::Display for MuxError {
             Self::SegmentTooLong => {
                 "segment exceeded the maximum sample count; is the source missing keyframes?"
             }
-            Self::RestoreAfterSamples => "restoreSegment must be called before any sample is pushed",
-            Self::BadRestoreDuration => {
-                "restored segment duration must be finite and non-negative"
+            Self::RestoreAfterSamples => {
+                "restoreSegment must be called before any sample is pushed"
             }
+            Self::BadRestoreDuration => "restored segment duration must be finite and non-negative",
             Self::AudioAfterStart => "setAudio must be called before packaging begins",
             Self::BadAudioConfig => "audio sample entry is missing or implausibly large",
             Self::NoAudioTrack => "pushAudioSample requires setAudio to have been called",
@@ -330,10 +330,13 @@ impl Fmp4Segmenter {
         }
 
         let index = self.next_index;
-        self.playlist.add_segment(&self.segment_name(index), duration);
+        self.playlist
+            .add_segment(&self.segment_name(index), duration);
 
         // Advance the timeline so the next segment's tfdt continues correctly.
-        let ticks = (duration * f64::from(self.config.timescale)).round().max(0.0) as u64;
+        let ticks = (duration * f64::from(self.config.timescale))
+            .round()
+            .max(0.0) as u64;
         self.base_decode_time = self.base_decode_time.saturating_add(ticks);
         self.next_index += 1;
         Ok(())
@@ -517,7 +520,8 @@ impl Fmp4Segmenter {
         );
         let duration = ticks as f64 / f64::from(self.config.timescale);
 
-        self.playlist.add_segment(&self.segment_name(index), duration);
+        self.playlist
+            .add_segment(&self.segment_name(index), duration);
         self.ready.push(Segment {
             data,
             duration,

@@ -153,9 +153,27 @@ mod tests {
     #[test]
     fn master_is_sorted_desc_by_bandwidth() {
         let rungs = vec![
-            Rung { uri: "480p.m3u8".into(),  bandwidth: 1_200_000, width: 854,  height: 480,  codecs: "avc1.4d401f".into() },
-            Rung { uri: "1080p.m3u8".into(), bandwidth: 5_000_000, width: 1920, height: 1080, codecs: "avc1.640028".into() },
-            Rung { uri: "720p.m3u8".into(),  bandwidth: 2_800_000, width: 1280, height: 720,  codecs: "avc1.4d401f".into() },
+            Rung {
+                uri: "480p.m3u8".into(),
+                bandwidth: 1_200_000,
+                width: 854,
+                height: 480,
+                codecs: "avc1.4d401f".into(),
+            },
+            Rung {
+                uri: "1080p.m3u8".into(),
+                bandwidth: 5_000_000,
+                width: 1920,
+                height: 1080,
+                codecs: "avc1.640028".into(),
+            },
+            Rung {
+                uri: "720p.m3u8".into(),
+                bandwidth: 2_800_000,
+                width: 1280,
+                height: 720,
+                codecs: "avc1.4d401f".into(),
+            },
         ];
         let t = master_playlist(&rungs);
         let pos = |n: &str| t.find(n).unwrap_or(usize::MAX);

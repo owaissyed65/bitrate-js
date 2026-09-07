@@ -1,7 +1,7 @@
 import { Account, Client, Permission, Role, Storage } from "appwrite";
 import {
-  DEFAULT_LADDER,
   HlsQueue,
+  LADDERS,
   inspect,
   isTranscodeSupported,
   rewritePlaylistUris,
@@ -93,6 +93,7 @@ export function AppwritePanel() {
   const [anonymous, setAnonymous] = useState(true);
   const [publicRead, setPublicRead] = useState(true);
   const [mode, setMode] = useState<"remux" | "transcode">("remux");
+  const [ladderName, setLadderName] = useState<keyof typeof LADDERS>("standard");
   const [sourceInfo, setSourceInfo] = useState<SourceInfo | null>(null);
 
   const [running, setRunning] = useState(false);
@@ -198,7 +199,7 @@ export function AppwritePanel() {
 
       const queue = new HlsQueue({
         mode,
-        ladder: DEFAULT_LADDER,
+        ladder: LADDERS[ladderName],
         segmentDuration: 6,
         retries: 2,
         upload: async (item) => {
@@ -427,6 +428,26 @@ export function AppwritePanel() {
         </div>
 
         {mode === "transcode" && (
+          <div className="row" style={{ marginBottom: "0.9rem" }}>
+            <span style={{ color: "var(--dim)", fontSize: "0.82rem" }}>ladder</span>
+            {(Object.keys(LADDERS) as (keyof typeof LADDERS)[]).map((name) => (
+              <button
+                key={name}
+                className={`small ${ladderName === name ? "" : "ghost"}`}
+                onClick={() => setLadderName(name)}
+                disabled={running}
+                title={LADDERS[name].map((r) => `${r.height}p @ ${(r.bitrate / 1e6).toFixed(1)}M`).join("  ·  ")}
+              >
+                {name}
+              </button>
+            ))}
+            <span className="mono" style={{ color: "var(--muted)", fontSize: "0.78rem" }}>
+              {LADDERS[ladderName].map((r) => `${r.height}p`).join(" · ")}
+            </span>
+          </div>
+        )}
+
+        {mode === "transcode" && (
           <p className="note warn" style={{ marginBottom: "1rem" }}>
             <strong>This takes minutes, not milliseconds.</strong> Every frame is decoded and
             re-encoded once per rung, so keep the tab open.
@@ -434,10 +455,10 @@ export function AppwritePanel() {
               <>
                 {" "}
                 For this {sourceInfo.height}p source that means{" "}
-                {DEFAULT_LADDER.filter((r) => r.height <= sourceInfo.height)
+                {LADDERS[ladderName].filter((r) => r.height <= sourceInfo.height)
                   .map((r) => `${r.height}p`)
                   .join(" · ") || `${sourceInfo.height}p`}
-                , and roughly {DEFAULT_LADDER.filter((r) => r.height <= sourceInfo.height).length ||
+                , and roughly {LADDERS[ladderName].filter((r) => r.height <= sourceInfo.height).length ||
                   1}
                 × as many files to upload.
               </>
