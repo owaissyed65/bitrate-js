@@ -26,6 +26,17 @@
         "."
       ],
       "port": 5179
+    },
+    {
+      "name": "react",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "dev",
+        "--prefix",
+        "examples/react-app"
+      ],
+      "port": 5180
     }
   ]
 }

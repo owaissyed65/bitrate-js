@@ -65,8 +65,15 @@ so it runs straight from disk. Pick a video and watch it become HLS.
 
 Rebuild it with `npm run build` in `js/`.
 
-For the full feature tour (queue, resume, transcode, adapters), serve
-[`examples/demo`](examples/demo/) over HTTP — any static server will do.
+For a visual tour — segment timeline, player with quality switching, live job cards —
+run the React showcase:
+
+```bash
+npm install --prefix examples/react-app && npm run dev --prefix examples/react-app
+```
+
+There is also a dependency-free version at [`examples/demo`](examples/demo/), which runs on
+any static server.
 
 ---
 
