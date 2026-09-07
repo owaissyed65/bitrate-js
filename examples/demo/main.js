@@ -471,7 +471,14 @@ $("abrRun").addEventListener("click", async () => {
     }
   } catch (error) {
     log.err(error.message);
-    log.warn("A source with synthetic frames cannot be decoded — use a real recording.");
+    // Point at the actual cause rather than guessing at the file.
+    if (/fragmented/i.test(error.message)) {
+      log.line("  Re-encode it to a progressive MP4, e.g. ffmpeg -i in.mp4 -c copy out.mp4");
+    } else if (/cannot encode/i.test(error.message)) {
+      log.line("  Try a smaller ladder, or use remux — it needs no encoder at all.");
+    } else if (/prepare video sample|decode/i.test(error.message)) {
+      log.line("  The generated sample has synthetic frames a decoder rejects; use a real recording.");
+    }
     $("abrRun").disabled = false;
     return;
   }

@@ -173,6 +173,16 @@ supply chain, CSP, and local-data hygiene.
 injects no DOM, and makes no network requests of its own — the only traffic is the upload
 adapter you supply.
 
+### Input requirements
+
+Sources must be **progressive MP4** with an H.264 track — the layout cameras, phones and
+editors produce. Fragmented MP4 (samples in `moof` boxes rather than `stbl`) is not read
+yet and is reported as such rather than appearing as a zero-length video. Convert one with:
+
+```bash
+ffmpeg -i fragmented.mp4 -c copy progressive.mp4
+```
+
 ## Browser support
 
 | | remux | transcode | seamless resume |

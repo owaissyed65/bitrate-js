@@ -26,6 +26,11 @@ pub enum DemuxError {
     TooLarge,
     /// The sample tables disagree with each other.
     InconsistentTables,
+    /// The file is a fragmented MP4; its samples live in `moof` boxes, which
+    /// this build does not read.
+    FragmentedMp4,
+    /// The video track declares no samples.
+    EmptyTrack,
 }
 
 impl core::fmt::Display for DemuxError {
@@ -36,6 +41,11 @@ impl core::fmt::Display for DemuxError {
             Self::MalformedBox(b) => write!(f, "malformed or truncated `{b}` box"),
             Self::TooLarge => f.write_str("file declares more samples than this build will process"),
             Self::InconsistentTables => f.write_str("sample tables are inconsistent"),
+            Self::FragmentedMp4 => f.write_str(
+                "this is a fragmented MP4 (its moov declares no samples); \
+                 fragmented input is not supported yet",
+            ),
+            Self::EmptyTrack => f.write_str("the video track contains no samples"),
         }
     }
 }
@@ -120,10 +130,20 @@ pub fn parse_moov(moov: &[u8]) -> Result<Movie, DemuxError> {
         }
     }
 
-    match video {
-        Some(video) => Ok(Movie { video, audio }),
-        None => Err(DemuxError::NoVideoTrack),
+    let video = video.ok_or(DemuxError::NoVideoTrack)?;
+
+    // A fragmented file has a `mvex` box and empty sample tables: the samples
+    // live in `moof` boxes we do not read. Detected here so the caller gets a
+    // straight answer instead of a track that silently reports zero duration.
+    if video.samples.is_empty() {
+        return Err(if find(moov, b"mvex").is_some() {
+            DemuxError::FragmentedMp4
+        } else {
+            DemuxError::EmptyTrack
+        });
     }
+
+    Ok(Movie { video, audio })
 }
 
 fn parse_video_trak(trak: &[u8]) -> Result<VideoTrack, DemuxError> {

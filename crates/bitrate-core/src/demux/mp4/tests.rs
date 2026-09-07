@@ -559,3 +559,44 @@ fn a_source_with_only_audio_is_rejected() {
     let moov = audio_trak(4, 44_100);
     assert_eq!(parse_moov(&moov), Err(DemuxError::NoVideoTrack));
 }
+
+// ---- fragmented and empty sources ----------------------------------------
+
+/// A `moov` whose sample tables are empty, as a fragmented file writes it.
+fn fragmented_moov(with_mvex: bool) -> Vec<u8> {
+    let trak = moov_with(
+        b"vide",
+        90_000,
+        vec![
+            stsd(&avc1(1920, 1080, AVCC)),
+            stsz_uniform(0, 0),
+            stts(&[]),
+            stsc(&[]),
+            stco(&[]),
+        ],
+    );
+    if with_mvex {
+        // mvex is what marks a file as fragmented.
+        let trex = full(b"trex", 0, &[0; 20]);
+        cat(&[trak, bx(b"mvex", &trex)])
+    } else {
+        trak
+    }
+}
+
+#[test]
+fn a_fragmented_mp4_is_named_rather_than_silently_empty() {
+    // Previously this parsed "successfully" with zero samples, so the caller
+    // saw a 0.0s video and no explanation.
+    assert_eq!(parse_moov(&fragmented_moov(true)), Err(DemuxError::FragmentedMp4));
+}
+
+#[test]
+fn a_track_with_no_samples_is_reported() {
+    assert_eq!(parse_moov(&fragmented_moov(false)), Err(DemuxError::EmptyTrack));
+}
+
+#[test]
+fn a_normal_file_is_not_mistaken_for_fragmented() {
+    assert!(parse_moov(&simple_moov(4)).is_ok());
+}

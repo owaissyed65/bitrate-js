@@ -18,6 +18,8 @@ as `npm i bitrate`.
 - Not a server-side transcoder or an ffmpeg replacement for long/4K films.
 - Not DRM / encryption (can come later as an add-on).
 - Not a player — we produce output that `hls.js` or native Safari can play.
+- Fragmented MP4 input is not read yet; sources must be progressive (samples described
+  in `stbl`, not `moof`).
 
 ---
 

@@ -312,3 +312,19 @@ describe("resume with audio", () => {
     }
   });
 });
+
+describe("unsupported sources are named, not silently empty", () => {
+  it("reports a fragmented MP4 rather than a zero-duration video", async () => {
+    // Our own output is a fragmented MP4, so feeding it back in is a faithful
+    // test of what a user hits with a fragmented source file.
+    const { blob } = sourceWithAudio(60, 30);
+    const files = await remuxAll(blob, { segmentDuration: 2 });
+
+    const parts: BlobPart[] = [];
+    for (const f of files.filter((x) => !x.isManifest)) parts.push(await f.blob.arrayBuffer());
+    const fragmented = new Blob(parts, { type: "video/mp4" });
+
+    // Previously this "succeeded" with 0 samples and reported 0.0s.
+    await expect(inspect(fragmented)).rejects.toThrow(/fragmented/i);
+  });
+});

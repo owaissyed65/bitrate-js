@@ -108,5 +108,13 @@ export function isSupported(): SupportReport {
   };
 }
 
-export { transcode, packageFrames, isTranscodeSupported, planLadder, DEFAULT_LADDER } from "./transcode.js";
+export {
+  transcode,
+  packageFrames,
+  isTranscodeSupported,
+  planLadder,
+  codecStringFromAvcC,
+  levelForFrame,
+  DEFAULT_LADDER,
+} from "./transcode.js";
 export type { TranscodeOptions } from "./transcode.js";

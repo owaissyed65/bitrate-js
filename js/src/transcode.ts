@@ -58,6 +58,95 @@ export function isTranscodeSupported(): boolean {
 }
 
 /**
+ * The RFC 6381 codec string for a source, read from its `avcC` record.
+ *
+ * A hardcoded string cannot work: `avc1.42e01e` is Baseline level 3.0, which
+ * tops out around 720×480. Configuring a decoder with it for a 1080p High
+ * profile source fails and closes the codec, and the first symptom is an
+ * unrelated-looking error from a later `flush()`.
+ *
+ * Bytes 1–3 of `avcC` are exactly profile, constraint flags and level.
+ */
+export function codecStringFromAvcC(avcc: Uint8Array): string {
+  if (avcc.length < 4) {
+    throw new Error("avcC record is too short to name a codec");
+  }
+  const hex = (n: number) => n.toString(16).padStart(2, "0");
+  return `avc1.${hex(avcc[1]!)}${hex(avcc[2]!)}${hex(avcc[3]!)}`;
+}
+
+/**
+ * The lowest H.264 level that can carry `width`x`height` at `fps`.
+ *
+ * Levels cap macroblocks per second and per frame; encoding 1080p at level 3.0
+ * is simply not expressible, so the level must scale with the rung.
+ */
+export function levelForFrame(width: number, height: number, fps = 30): number {
+  const macroblocks = Math.ceil(width / 16) * Math.ceil(height / 16);
+  const perSecond = macroblocks * fps;
+
+  // (level byte, max macroblocks/frame, max macroblocks/second)
+  const levels: [number, number, number][] = [
+    [0x1e, 1_620, 40_500], // 3.0  — 720x480
+    [0x1f, 3_600, 108_000], // 3.1 — 1280x720
+    [0x20, 5_120, 216_000], // 3.2
+    [0x28, 8_192, 245_760], // 4.0 — 1920x1080
+    [0x29, 8_192, 245_760], // 4.1
+    [0x2a, 8_704, 522_240], // 4.2 — 1080p60
+    [0x32, 22_080, 589_824], // 5.0 — 2560x1920
+    [0x33, 36_864, 983_040], // 5.1 — 4096x2048
+    [0x34, 36_864, 2_073_600], // 5.2
+  ];
+
+  for (const [level, maxFrame, maxRate] of levels) {
+    if (macroblocks <= maxFrame && perSecond <= maxRate) return level;
+  }
+  return 0x34;
+}
+
+/**
+ * Choose an encoder configuration this browser will actually accept.
+ *
+ * Profiles and levels vary by platform and by hardware encoder, so candidates
+ * are checked with `isConfigSupported` rather than assumed. Main is tried
+ * first for broad playback compatibility, then High, then Baseline.
+ */
+async function resolveEncoderConfig(
+  width: number,
+  height: number,
+  bitrate: number,
+  framerate: number,
+): Promise<VideoEncoderConfig> {
+  const level = levelForFrame(width, height, framerate).toString(16).padStart(2, "0");
+  const candidates = [`avc1.4d00${level}`, `avc1.6400${level}`, `avc1.4200${level}`];
+
+  const attempted: string[] = [];
+  for (const codec of candidates) {
+    const config: VideoEncoderConfig = {
+      codec,
+      width,
+      height,
+      bitrate,
+      framerate,
+      latencyMode: "quality",
+      avc: { format: "avc" },
+    };
+    try {
+      const support = await VideoEncoder.isConfigSupported(config);
+      if (support.supported) return (support.config as VideoEncoderConfig) ?? config;
+      attempted.push(codec);
+    } catch {
+      attempted.push(codec);
+    }
+  }
+
+  throw new Error(
+    `This browser cannot encode ${width}x${height} H.264 (tried ${attempted.join(", ")}). ` +
+      `Use mode "remux" to chunk without re-encoding, or choose a smaller ladder.`,
+  );
+}
+
+/**
  * Drop rungs that would upscale, and scale widths to preserve aspect ratio.
  *
  * Encoders require even dimensions for 4:2:0 chroma, so widths are rounded to
@@ -141,25 +230,35 @@ export async function* transcode(
   const samples = buildSampleList(demuxer);
   demuxer.free();
 
+  if (samples.length === 0) {
+    demuxer.free();
+    throw new Error(
+      "This file declares no video samples in its sample tables. It is most likely a " +
+        "fragmented MP4, which is not supported yet.",
+    );
+  }
+
+  // Frame rate drives the H.264 level, so derive it rather than assuming 30.
+  const totalTicks = samples.reduce((t, s) => t + s.duration, 0);
+  const framerate =
+    totalTicks > 0 ? Math.round(samples.length / (totalTicks / sourceTimescale)) || 30 : 30;
+
   const plan = planLadder(ladder, sourceWidth, sourceHeight);
   const rungs: RungPipeline[] = [];
 
   try {
+    // Resolve every encoder configuration before creating anything, so an
+    // unsupported ladder fails with a clear message instead of surfacing later
+    // as an error from a closed codec.
+    const configs = await Promise.all(
+      plan.map((rung) => resolveEncoderConfig(rung.width, rung.height, rung.bitrate, framerate)),
+    );
+
     for (const rung of plan) {
       rungs.push(createRung(prefix, rung, segmentDuration));
     }
-
-    // Configure every encoder up front so the first frame can fan out at once.
-    for (const rung of rungs) {
-      rung.encoder.configure({
-        codec: "avc1.42e01e", // Baseline 3.0 — the most broadly decodable profile
-        width: rung.width,
-        height: rung.height,
-        bitrate: rung.bitrate,
-        // Force keyframes at segment boundaries so segments stay independent.
-        latencyMode: "quality",
-        avc: { format: "avc" },
-      });
+    for (let i = 0; i < rungs.length; i++) {
+      rungs[i]!.encoder.configure(configs[i]!);
     }
 
     const decoder = createDecoder(sourceConfig, sourceWidth, sourceHeight);
@@ -211,12 +310,24 @@ export async function* transcode(
     }
 
     await decoder.decoder.flush();
+    if (decoder.failure) throw decoder.failure;
     for (const frame of decoder.take()) {
       for (const rung of rungs) rung.encoder.encode(frame, { keyFrame: false });
       frame.close();
     }
 
     for (const rung of rungs) {
+      // A codec that already failed is closed, and flushing it throws an
+      // unhelpful "closed codec" error that hides the real cause. Report what
+      // actually went wrong instead.
+      if (rung.error) throw rung.error;
+      if (rung.encoder.state === "closed") {
+        throw new Error(
+          `The encoder for ${rung.name} closed before finishing. The browser likely rejected ` +
+            `${rung.width}x${rung.height} at this bitrate.`,
+        );
+      }
+
       await rung.encoder.flush();
       rung.segmenter?.finish();
       yield* drainRung(rung);
@@ -298,15 +409,11 @@ export async function* packageFrames(
           const width = options.sourceWidth ?? frame.displayWidth;
           const height = options.sourceHeight ?? frame.displayHeight;
           for (const spec of planLadder(ladder, width, height)) {
+            // Resolve rather than assume: the level must match the resolution,
+            // and available profiles vary by platform.
+            const config = await resolveEncoderConfig(spec.width, spec.height, spec.bitrate, 30);
             const rung = createRung(prefix, spec, segmentDuration);
-            rung.encoder.configure({
-              codec: "avc1.42e01e",
-              width: spec.width,
-              height: spec.height,
-              bitrate: spec.bitrate,
-              latencyMode: "quality",
-              avc: { format: "avc" },
-            });
+            rung.encoder.configure(config);
             rungs.push(rung);
           }
           configured = true;
@@ -327,6 +434,11 @@ export async function* packageFrames(
     }
 
     for (const rung of rungs) {
+      if (rung.error) throw rung.error;
+      if (rung.encoder.state === "closed") {
+        throw new Error(`The encoder for ${rung.name} closed before finishing.`);
+      }
+
       await rung.encoder.flush();
       rung.segmenter?.finish();
       yield* drainRung(rung);
@@ -422,22 +534,33 @@ function createRung(
 /** Wrap a `VideoDecoder` with a simple output buffer. */
 function createDecoder(codecConfig: Uint8Array, width: number, height: number) {
   const output: VideoFrame[] = [];
+  let failure: Error | null = null;
+
   const decoder = new VideoDecoder({
     output: (frame) => output.push(frame),
+    // Throwing from this callback would surface far from the cause; record it
+    // and let the caller report it against the sample that triggered it.
     error: (error) => {
-      throw error;
+      failure = error instanceof Error ? error : new Error(String(error));
     },
   });
+
+  // Read the profile and level from the source rather than assuming them.
   decoder.configure({
-    codec: "avc1.42e01e",
+    codec: codecStringFromAvcC(codecConfig),
     description: codecConfig,
     codedWidth: width,
     codedHeight: height,
   });
+
   return {
     decoder,
     take(): VideoFrame[] {
+      if (failure) throw failure;
       return output.splice(0, output.length);
+    },
+    get failure(): Error | null {
+      return failure;
     },
   };
 }
