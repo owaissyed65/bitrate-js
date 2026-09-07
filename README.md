@@ -36,7 +36,7 @@ user picks files ─▶ QUEUE ─▶ chunk / encode ABR ladder ─▶ HLS ─▶
 | Mode | Speed | Use when |
 |---|---|---|
 | `remux` | **Near-instant** (1 GB in seconds) | You just want chunking + seeking. No re-encode, no WebCodecs needed, works on more devices. |
-| `transcode` | Slower; needs a GPU encoder | You need a real multi-quality ABR ladder. |
+| `transcode` | Slower; needs a GPU encoder | You need a real multi-quality ABR ladder. Audio is re-encoded and carried through. |
 
 ## Output
 
