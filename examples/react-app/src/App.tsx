@@ -1,5 +1,6 @@
 import { useState } from "react";
 
+import { AdaptersPanel } from "./components/AdaptersPanel";
 import { AppwritePanel } from "./components/AppwritePanel";
 import { CapabilitiesPanel } from "./components/CapabilitiesPanel";
 import { PackagePanel } from "./components/PackagePanel";
@@ -11,6 +12,7 @@ const TABS = [
   { id: "package", label: "Package a video", element: <PackagePanel /> },
   { id: "queue", label: "Queue & upload", element: <QueuePanel /> },
   { id: "resume", label: "Resume", element: <ResumePanel /> },
+  { id: "adapters", label: "Adapters", element: <AdaptersPanel /> },
   { id: "appwrite", label: "Appwrite upload", element: <AppwritePanel /> },
   { id: "capabilities", label: "Capabilities", element: <CapabilitiesPanel /> },
   { id: "security", label: "Security", element: <SecurityPanel /> },

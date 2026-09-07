@@ -173,8 +173,11 @@ s3Adapter({ client: appS3Client, putObjectCommand: PutObjectCommand, bucket: "vi
 | Supabase | `anon` key + Row Level Security on the bucket |
 | Appwrite | Session-scoped client + bucket permissions |
 
-Full model in [SECURITY.md](SECURITY.md): path-traversal defence, untrusted-input parsing,
-supply chain, CSP, and local-data hygiene.
+Complete configuration for every provider — including CORS, cache headers and the settings
+people usually miss — is in **[ADAPTERS.md](ADAPTERS.md)**.
+
+Full security model in [SECURITY.md](SECURITY.md): path-traversal defence, untrusted-input
+parsing, supply chain, CSP, and local-data hygiene.
 
 **CSP note:** WASM needs `script-src 'wasm-unsafe-eval'`. The package uses no `eval`,
 injects no DOM, and makes no network requests of its own — the only traffic is the upload
