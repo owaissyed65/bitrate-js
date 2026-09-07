@@ -219,13 +219,17 @@ describe("cancellation", () => {
 });
 
 describe("configuration validation", () => {
-  it("rejects modes that are not implemented yet", () => {
-    expect(() => new HlsQueue({ mode: "transcode" })).toThrow(/not implemented/);
-  });
-
-  it("accepts remux and auto", () => {
+  it("accepts every mode", () => {
     expect(() => new HlsQueue({ mode: "remux" })).not.toThrow();
     expect(() => new HlsQueue({ mode: "auto" })).not.toThrow();
+  });
+
+  it("refuses transcode where WebCodecs is unavailable, naming the alternative", () => {
+    // Node has no WebCodecs, which is exactly the case this guards: failing at
+    // construction beats failing partway through a long job.
+    if (typeof globalThis.VideoEncoder === "function") return;
+    expect(() => new HlsQueue({ mode: "transcode" })).toThrow(/WebCodecs/);
+    expect(() => new HlsQueue({ mode: "transcode" })).toThrow(/remux/);
   });
 
   it("rejects nonsensical concurrency", () => {

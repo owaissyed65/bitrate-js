@@ -9,6 +9,7 @@
 
 import { remux, type RemuxOptions, type ResumeState } from "./remux.js";
 import { JobStore, matchesJob, type StoredJob } from "./storage.js";
+import { isTranscodeSupported, transcode, type TranscodeOptions } from "./transcode.js";
 import { withRetry } from "./upload.js";
 import type {
   JobFailure,
@@ -34,10 +35,21 @@ export interface QueueJob {
 }
 
 export interface HlsQueueOptions {
-  /** How much work per file. Only `"remux"` is implemented today. */
+  /**
+   * How much work to do per file.
+   *
+   * - `"remux"` — chunk without re-encoding. Near-instant, keeps the source
+   *   quality exactly, works without WebCodecs, and supports resume.
+   * - `"transcode"` — re-encode into {@link HlsQueueOptions.ladder}. Slow and
+   *   needs a hardware encoder, but produces the several qualities a player
+   *   needs in order to adapt to bandwidth.
+   * - `"auto"` — remux, which is the right default for most sources.
+   */
   mode?: PackageMode;
-  /** ABR ladder. Reserved for transcode mode (M6). */
+  /** The ABR ladder, used in transcode mode. */
   ladder?: Rung[];
+  /** AAC bitrate when transcoding audio. Default 128 kbps. */
+  audioBitrate?: number;
   /** Minimum segment length in seconds. Default 6. */
   segmentDuration?: number;
   /** Files processed simultaneously. Default 1 — raise with care. */
@@ -123,9 +135,9 @@ export class HlsQueue {
   #drained: Promise<QueueReport> | null = null;
 
   constructor(options: HlsQueueOptions = {}) {
-    if (options.mode && options.mode !== "remux" && options.mode !== "auto") {
+    if (options.mode === "transcode" && !isTranscodeSupported()) {
       throw new Error(
-        `mode "${options.mode}" is not implemented yet; only "remux" is available in this version`,
+        'mode "transcode" needs WebCodecs, which this browser does not provide. Use "remux" to chunk without re-encoding.',
       );
     }
     const concurrency = options.concurrency ?? 1;
@@ -298,9 +310,41 @@ export class HlsQueue {
       };
     }
 
+    const transcoding = this.#options.mode === "transcode";
+    if (transcoding && job.resume) {
+      // Resume checkpoints record where in the *source* to restart, which only
+      // means anything when frames are copied rather than re-encoded.
+      throw new Error("Resuming a transcode is not supported; re-run the job from the start.");
+    }
+
+    const transcodeOptions: TranscodeOptions = {
+      prefix: job.prefix,
+      segmentDuration,
+      signal: this.#controller.signal,
+      onProgress: ({ fraction }) => {
+        job.progress = fraction;
+        this.#options.onProgress?.({ jobId: job.id, rung: null, percent: fraction * 100 });
+      },
+    };
+    if (this.#options.ladder) transcodeOptions.ladder = this.#options.ladder;
+    if (this.#options.audioBitrate !== undefined) {
+      transcodeOptions.audioBitrate = this.#options.audioBitrate;
+    }
+    if (this.#options.readWindow !== undefined) {
+      transcodeOptions.readWindow = this.#options.readWindow;
+    }
+
+    const stream = transcoding
+      ? transcode(job.file, transcodeOptions)
+      : remux(job.file, remuxOptions);
+
     let masterPlaylist = "";
-    for await (const output of remux(job.file, remuxOptions)) {
-      if (output.isManifest) masterPlaylist = output.name;
+    for await (const output of stream) {
+      // A ladder emits a playlist per rung and then the master; the master is
+      // the one a player should be given, and it comes last.
+      if (output.isManifest && (!masterPlaylist || output.name.includes("master"))) {
+        masterPlaylist = output.name;
+      }
       job.produced.push(output.name);
 
       if (upload) {

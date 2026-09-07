@@ -1,5 +1,12 @@
 import { Account, Client, Permission, Role, Storage } from "appwrite";
-import { HlsQueue, rewritePlaylistUris } from "bitrate-js";
+import {
+  DEFAULT_LADDER,
+  HlsQueue,
+  inspect,
+  isTranscodeSupported,
+  rewritePlaylistUris,
+  type SourceInfo,
+} from "bitrate-js";
 import { appwriteAdapter } from "bitrate-js/adapters/appwrite";
 import { useEffect, useState } from "react";
 
@@ -85,6 +92,8 @@ export function AppwritePanel() {
   const [file, setFile] = useState<File | null>(null);
   const [anonymous, setAnonymous] = useState(true);
   const [publicRead, setPublicRead] = useState(true);
+  const [mode, setMode] = useState<"remux" | "transcode">("remux");
+  const [sourceInfo, setSourceInfo] = useState<SourceInfo | null>(null);
 
   const [running, setRunning] = useState(false);
   const [log, setLog] = useState<{ text: string; kind: "info" | "ok" | "err" }[]>([]);
@@ -188,6 +197,8 @@ export function AppwritePanel() {
         `${settings.endpoint}/storage/buckets/${settings.bucketId}/files/${name}/view?project=${settings.projectId}`;
 
       const queue = new HlsQueue({
+        mode,
+        ladder: DEFAULT_LADDER,
         segmentDuration: 6,
         retries: 2,
         upload: async (item) => {
@@ -215,7 +226,10 @@ export function AppwritePanel() {
 
       const started = performance.now();
       const ids = queue.add(file);
-      say(`job ${ids[0]} — packaging ${file.name}`);
+      say(`job ${ids[0]} — ${mode === "transcode" ? "transcoding" : "remuxing"} ${file.name}`);
+      if (mode === "transcode") {
+        say("re-encoding every frame — this takes minutes, not milliseconds");
+      }
 
       const report = await queue.drain();
 
@@ -230,11 +244,17 @@ export function AppwritePanel() {
 
         // Build view URLs from the deterministic ids the adapter derives.
         const { toAppwriteFileId } = await import("bitrate-js/adapters/appwrite");
+        // A ladder emits a playlist per rung plus a master. The master is the
+        // one to hand a player, so prefer it when both are present.
+        let playlistSet = false;
         for (const name of produced.files) {
           const id = toAppwriteFileId(undefined, name);
           const url = `${settings.endpoint}/storage/buckets/${settings.bucketId}/files/${id}/view?project=${settings.projectId}`;
           results.push({ name, size: 0, url });
-          if (name.endsWith(".m3u8")) setPlaylistUrl(url);
+          if (name.endsWith(".m3u8") && (!playlistSet || name.includes("master"))) {
+            setPlaylistUrl(url);
+            playlistSet = true;
+          }
         }
         setUploaded(results);
         say("playlist URIs rewritten to absolute view URLs — Appwrite serves files by id, so relative ones would 404", "ok");
@@ -379,8 +399,64 @@ export function AppwritePanel() {
 
       <section className="card">
         <h2>Choose a video and upload</h2>
+        <div className="row" style={{ marginBottom: "1rem" }}>
+          <button
+            className={mode === "remux" ? "" : "ghost"}
+            onClick={() => setMode("remux")}
+            disabled={running}
+          >
+            Remux
+          </button>
+          <button
+            className={mode === "transcode" ? "" : "ghost"}
+            onClick={() => setMode("transcode")}
+            disabled={running || !isTranscodeSupported()}
+            title={
+              isTranscodeSupported()
+                ? "Re-encode into several qualities"
+                : "This browser has no WebCodecs"
+            }
+          >
+            Transcode to ladder
+          </button>
+          <span style={{ color: "var(--dim)", fontSize: "0.82rem" }}>
+            {mode === "remux"
+              ? "chunk without re-encoding — near-instant, one quality"
+              : "re-encode into several qualities — slow, adapts to bandwidth"}
+          </span>
+        </div>
+
+        {mode === "transcode" && (
+          <p className="note warn" style={{ marginBottom: "1rem" }}>
+            <strong>This takes minutes, not milliseconds.</strong> Every frame is decoded and
+            re-encoded once per rung, so keep the tab open.
+            {sourceInfo && (
+              <>
+                {" "}
+                For this {sourceInfo.height}p source that means{" "}
+                {DEFAULT_LADDER.filter((r) => r.height <= sourceInfo.height)
+                  .map((r) => `${r.height}p`)
+                  .join(" · ") || `${sourceInfo.height}p`}
+                , and roughly {DEFAULT_LADDER.filter((r) => r.height <= sourceInfo.height).length ||
+                  1}
+                × as many files to upload.
+              </>
+            )}
+            {sourceInfo?.hasAudio && " Audio is re-encoded and kept."}
+          </p>
+        )}
+
         {!file ? (
-          <Dropzone onFiles={(f) => setFile(f[0]!)} />
+          <Dropzone
+            onFiles={(f) => {
+              const picked = f[0]!;
+              setFile(picked);
+              setSourceInfo(null);
+              void inspect(picked)
+                .then(setSourceInfo)
+                .catch(() => setSourceInfo(null));
+            }}
+          />
         ) : (
           <div className="row">
             <span className="chip mono">{file.name}</span>

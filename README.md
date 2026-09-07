@@ -81,6 +81,7 @@ import { HlsQueue, JobStore } from "bitrate-js";
 import { presignedAdapter } from "bitrate-js/adapters/presigned";
 
 const q = new HlsQueue({
+  mode: "remux",              // or "transcode" for an ABR ladder
   segmentDuration: 6,
   concurrency: 1,
   retries: 3,
