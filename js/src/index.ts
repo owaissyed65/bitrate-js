@@ -35,6 +35,13 @@ export { MIME_MANIFEST, MIME_SEGMENT } from "./types.js";
 
 export { remux, inspect } from "./remux.js";
 export type { OutputFile, RemuxOptions, SourceInfo } from "./remux.js";
+
+export { HlsQueue } from "./queue.js";
+export type { HlsQueueOptions, JobStatus, QueueJob } from "./queue.js";
+
+export { withRetry, PermanentUploadError, joinKey, assertSafeKey } from "./upload.js";
+export type { RetryOptions } from "./upload.js";
+
 export { ensureWasm } from "./wasm-loader.js";
 
 /** What the environment must provide for each mode. */

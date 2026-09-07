@@ -4,7 +4,9 @@ export default defineConfig({
   entry: [
     "src/index.ts",
     "src/adapters/presigned.ts",
-    // s3 / supabase / appwrite adapters land in M3 — see PLAN.md §5.
+    "src/adapters/s3.ts",
+    "src/adapters/supabase.ts",
+    "src/adapters/appwrite.ts",
   ],
   format: ["esm"],
   dts: true,

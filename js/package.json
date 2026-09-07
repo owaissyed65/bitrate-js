@@ -28,6 +28,18 @@
     "./adapters/presigned": {
       "types": "./dist/adapters/presigned.d.ts",
       "import": "./dist/adapters/presigned.js"
+    },
+    "./adapters/s3": {
+      "types": "./dist/adapters/s3.d.ts",
+      "import": "./dist/adapters/s3.js"
+    },
+    "./adapters/supabase": {
+      "types": "./dist/adapters/supabase.d.ts",
+      "import": "./dist/adapters/supabase.js"
+    },
+    "./adapters/appwrite": {
+      "types": "./dist/adapters/appwrite.d.ts",
+      "import": "./dist/adapters/appwrite.js"
     }
   },
   "files": [
