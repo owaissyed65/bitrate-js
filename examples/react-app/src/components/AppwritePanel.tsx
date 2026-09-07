@@ -26,10 +26,53 @@ interface Settings {
 }
 
 const EMPTY: Settings = {
-  endpoint: "https://cloud.appwrite.io/v1",
+  endpoint: "https://fra.cloud.appwrite.io/v1",
   projectId: "",
   bucketId: "",
 };
+
+/**
+ * Appwrite Cloud endpoints.
+ *
+ * Projects are created in a region and are only reachable through that
+ * region's host; using the wrong one fails with "Project is not accessible in
+ * this region". The bare `cloud.appwrite.io` host is the older global one and
+ * does not serve regional projects. The list may grow — the endpoint field
+ * accepts anything, including a self-hosted instance.
+ */
+const KNOWN_ENDPOINTS: { label: string; url: string }[] = [
+  { label: "Frankfurt", url: "https://fra.cloud.appwrite.io/v1" },
+  { label: "New York", url: "https://nyc.cloud.appwrite.io/v1" },
+  { label: "Sydney", url: "https://syd.cloud.appwrite.io/v1" },
+  { label: "San Francisco", url: "https://sfo.cloud.appwrite.io/v1" },
+  { label: "legacy global", url: "https://cloud.appwrite.io/v1" },
+];
+
+/** What a probe of one endpoint tells us about a project. */
+type ProbeResult = "found" | "wrong-region" | "no-project" | "unreachable";
+
+/**
+ * Ask one endpoint whether it hosts `projectId`.
+ *
+ * `account.get()` is the cheapest call that exercises project routing. As a
+ * guest it fails with a missing-scope error — which is itself proof the project
+ * was found, since routing had to succeed to get that far.
+ */
+async function probeEndpoint(endpoint: string, projectId: string): Promise<ProbeResult> {
+  try {
+    const client = new Client().setEndpoint(endpoint).setProject(projectId);
+    await new Account(client).get();
+    return "found"; // an existing session; the project is certainly here
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (/not accessible in this region/i.test(message)) return "wrong-region";
+    if (/could not be found/i.test(message)) return "no-project";
+    if (/missing scope|unauthorized|guests|401/i.test(message)) return "found";
+    if (/fetch|network|Failed to fetch/i.test(message)) return "unreachable";
+    // Anything else means routing worked and the failure is about the session.
+    return "found";
+  }
+}
 
 interface Uploaded {
   name: string;
@@ -46,6 +89,35 @@ export function AppwritePanel() {
   const [log, setLog] = useState<{ text: string; kind: "info" | "ok" | "err" }[]>([]);
   const [uploaded, setUploaded] = useState<Uploaded[]>([]);
   const [playlistUrl, setPlaylistUrl] = useState<string | null>(null);
+  const [detecting, setDetecting] = useState(false);
+  const [probes, setProbes] = useState<{ label: string; url: string; result: ProbeResult }[]>([]);
+
+  /** Try each known endpoint until one admits to hosting this project. */
+  async function detectRegion() {
+    if (!settings.projectId) return;
+    setDetecting(true);
+    setProbes([]);
+
+    const found: typeof probes = [];
+    for (const endpoint of KNOWN_ENDPOINTS) {
+      const result = await probeEndpoint(endpoint.url, settings.projectId);
+      found.push({ ...endpoint, result });
+      setProbes([...found]);
+
+      if (result === "found") {
+        update({ endpoint: endpoint.url });
+        say(`project found in ${endpoint.label} — endpoint set to ${endpoint.url}`, "ok");
+        setDetecting(false);
+        return;
+      }
+    }
+
+    setDetecting(false);
+    say(
+      "None of the known endpoints host this project. Copy the API Endpoint shown in your Appwrite console under Settings, and paste it above.",
+      "err",
+    );
+  }
 
   useEffect(() => {
     try {
@@ -145,8 +217,13 @@ export function AppwritePanel() {
           "info",
         );
       }
-      if (/Project with the requested ID could not be found/i.test(message)) {
-        say("Check the project ID and that the endpoint matches your region.", "info");
+      if (/not accessible in this region/i.test(message)) {
+        say(
+          "Appwrite Cloud projects live in one region and are only reachable through that region's endpoint. Press Detect above, or copy the API Endpoint from your Appwrite console under Settings.",
+          "info",
+        );
+      } else if (/Project with the requested ID could not be found/i.test(message)) {
+        say("Check the project ID, and that the endpoint matches the project's region.", "info");
       }
     } finally {
       setRunning(false);
@@ -176,10 +253,49 @@ export function AppwritePanel() {
               className="mono"
               style={inputStyle}
               value={settings.endpoint}
-              placeholder="https://cloud.appwrite.io/v1"
+              placeholder="https://fra.cloud.appwrite.io/v1"
               onChange={(e) => update({ endpoint: e.target.value.trim() })}
             />
           </label>
+
+          <div className="row">
+            <span style={{ color: "var(--dim)", fontSize: "0.8rem" }}>region</span>
+            {KNOWN_ENDPOINTS.map((option) => (
+              <button
+                key={option.url}
+                className={`small ${settings.endpoint === option.url ? "" : "ghost"}`}
+                onClick={() => update({ endpoint: option.url })}
+                title={option.url}
+              >
+                {option.label}
+              </button>
+            ))}
+            <button
+              className="small ghost"
+              disabled={!settings.projectId || detecting}
+              onClick={() => void detectRegion()}
+              title="Try each endpoint and keep the one that hosts this project"
+            >
+              {detecting ? "Detecting…" : "Detect"}
+            </button>
+          </div>
+
+          {probes.length > 0 && (
+            <div style={{ fontSize: "0.8rem", color: "var(--muted)" }}>
+              {probes.map((p) => (
+                <div key={p.url} className="mono">
+                  {p.result === "found" ? "✓" : "·"} {p.label} —{" "}
+                  {p.result === "found"
+                    ? "hosts this project"
+                    : p.result === "wrong-region"
+                      ? "different region"
+                      : p.result === "no-project"
+                        ? "no such project here"
+                        : "unreachable"}
+                </div>
+              ))}
+            </div>
+          )}
           <label style={{ display: "grid", gap: "0.25rem" }}>
             Project ID
             <input
