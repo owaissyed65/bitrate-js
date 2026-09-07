@@ -8,15 +8,23 @@
 //! `unsafe` is forbidden and parsers must never panic on malformed input.
 
 #![forbid(unsafe_code)]
-#![deny(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
+// Production code must never panic on malformed input, so panicking operations
+// are denied. Tests are exempt: indexing and `expect` make assertions readable,
+// and a failing test *should* panic.
+#![cfg_attr(
+    not(test),
+    deny(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)
+)]
 #![warn(clippy::all, missing_docs)]
 
 use wasm_bindgen::prelude::*;
 
 mod hls;
+mod mux;
 mod sanitize;
 
-pub use hls::MediaPlaylist;
+pub use hls::{master_playlist, MediaPlaylist, Rung};
+pub use mux::{Fmp4Segmenter, MuxError, Segment};
 pub use sanitize::sanitize_key;
 
 /// Crate version, surfaced to JS so the wrapper can assert wasm/JS parity.
