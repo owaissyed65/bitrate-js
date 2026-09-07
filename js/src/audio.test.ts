@@ -313,18 +313,84 @@ describe("resume with audio", () => {
   });
 });
 
-describe("unsupported sources are named, not silently empty", () => {
-  it("reports a fragmented MP4 rather than a zero-duration video", async () => {
-    // Our own output is a fragmented MP4, so feeding it back in is a faithful
-    // test of what a user hits with a fragmented source file.
-    const { blob } = sourceWithAudio(60, 30);
-    const files = await remuxAll(blob, { segmentDuration: 2 });
+describe("fragmented sources", () => {
+  /**
+   * Our own output is a fragmented MP4, so feeding it back in exercises exactly
+   * what a user hits with a fragmented source file — and the expected result is
+   * known precisely, because the same pipeline produced it.
+   */
+  async function refragment(frameCount: number, gop: number, segmentDuration: number) {
+    const source = sourceWithAudio(frameCount, gop);
+    const files = await remuxAll(source.blob, { segmentDuration });
 
     const parts: BlobPart[] = [];
     for (const f of files.filter((x) => !x.isManifest)) parts.push(await f.blob.arrayBuffer());
-    const fragmented = new Blob(parts, { type: "video/mp4" });
+    return { source, fragmented: new Blob(parts, { type: "video/mp4" }) };
+  }
 
-    // Previously this "succeeded" with 0 samples and reported 0.0s.
-    await expect(inspect(fragmented)).rejects.toThrow(/fragmented/i);
+  it("reads the samples out of moof boxes", async () => {
+    const { source, fragmented } = await refragment(120, 30, 2);
+    const info = await inspect(fragmented);
+
+    // Every frame the original had must be recovered from the fragments.
+    expect(info.sampleCount).toBe(120);
+    expect(info.width).toBe(1280);
+    expect(info.height).toBe(720);
+    expect(info.duration).toBeCloseTo(4.0, 2);
+    expect(info.hasAudio).toBe(true);
+    expect(info.audioSampleCount).toBe(source.audioPayloads.length);
+  });
+
+  it("packages a fragmented source into playable HLS", async () => {
+    const { fragmented } = await refragment(120, 30, 2);
+    const files = await remuxAll(fragmented, { prefix: "refrag", segmentDuration: 1 });
+
+    expect(files.filter((f) => f.name.endsWith(".m4s")).length).toBeGreaterThan(1);
+    const playlist = await files.find((f) => f.isManifest)!.blob.text();
+    expect(playlist).toContain("#EXT-X-ENDLIST");
+  });
+
+  it("preserves frame bytes through a fragmented round trip", async () => {
+    const source = sourceWithAudio(90, 30);
+
+    // Package once, feed the result back, package again: the frames must
+    // survive both passes untouched.
+    const first = await remuxAll(source.blob, { segmentDuration: 3 });
+    const parts: BlobPart[] = [];
+    for (const f of first.filter((x) => !x.isManifest)) parts.push(await f.blob.arrayBuffer());
+
+    const second = await remuxAll(new Blob(parts), { segmentDuration: 3 });
+
+    const recovered: number[] = [];
+    for (const seg of second.filter((f) => f.name.endsWith(".m4s"))) {
+      const data = await bytesOf(seg);
+      const mdat = child(data, "mdat");
+      const runs = trafs(data);
+      const videoBytes = sumTrunSizes(runs[0]!);
+      recovered.push(...Array.from(mdat.subarray(0, videoBytes)));
+    }
+
+    expect(recovered).toEqual(source.samplePayloads.flatMap((p) => Array.from(p)));
+  });
+
+  it("keeps keyframe positions, so segments still start on one", async () => {
+    const { fragmented } = await refragment(120, 30, 2);
+    const files = await remuxAll(fragmented, { segmentDuration: 1 });
+
+    for (const seg of files.filter((f) => f.name.endsWith(".m4s"))) {
+      const trun = child(trafs(await bytesOf(seg))[0]!, "trun");
+      // First sample flags sit 8 bytes into the first entry.
+      expect(be32(trun, 12 + 8), seg.name).toBe(0x0200_0000);
+    }
+  });
+
+  it("reports a fragmented file that carries no fragments", async () => {
+    // Just the init segment: a complete moov that declares fragmentation, with
+    // no moof boxes behind it. Saying "no samples" beats reporting 0.0s.
+    const source = sourceWithAudio(60, 30);
+    const files = await remuxAll(source.blob, { segmentDuration: 2 });
+    const initOnly = files[0]!.blob;
+
+    await expect(inspect(initOnly)).rejects.toThrow(/no 'moof' boxes|no samples/i);
   });
 });

@@ -104,12 +104,21 @@ pub struct Movie {
     pub video: VideoTrack,
     /// `None` for a silent source — packaging then produces video only.
     pub audio: Option<AudioTrack>,
+    /// True when the samples live in `moof` boxes rather than the sample
+    /// tables, so the caller must supply the fragments.
+    pub is_fragmented: bool,
+    /// Track id of the video track, needed to match it inside a fragment.
+    pub video_track_id: u32,
+    /// Track id of the audio track, when there is one.
+    pub audio_track_id: u32,
 }
 
 /// Parse a `moov` payload into its video track and optional audio track.
 pub fn parse_moov(moov: &[u8]) -> Result<Movie, DemuxError> {
     let mut video: Option<VideoTrack> = None;
     let mut audio: Option<AudioTrack> = None;
+    let mut video_track_id = 0;
+    let mut audio_track_id = 0;
 
     for b in boxes(moov) {
         if !b.is(b"trak") {
@@ -118,6 +127,7 @@ pub fn parse_moov(moov: &[u8]) -> Result<Movie, DemuxError> {
         match handler_of(b.payload) {
             Some(kind) if &kind == b"vide" && video.is_none() => {
                 video = Some(parse_video_trak(b.payload)?);
+                video_track_id = track_id_of(b.payload).unwrap_or(1);
             }
             // A source may carry several audio tracks (commentary, languages);
             // the first is the main one for our purposes.
@@ -125,6 +135,9 @@ pub fn parse_moov(moov: &[u8]) -> Result<Movie, DemuxError> {
                 // A malformed audio track should not sink an otherwise fine
                 // video: drop it and package silent output instead.
                 audio = parse_audio_trak(b.payload).ok();
+                if audio.is_some() {
+                    audio_track_id = track_id_of(b.payload).unwrap_or(2);
+                }
             }
             _ => {}
         }
@@ -132,18 +145,30 @@ pub fn parse_moov(moov: &[u8]) -> Result<Movie, DemuxError> {
 
     let video = video.ok_or(DemuxError::NoVideoTrack)?;
 
-    // A fragmented file has a `mvex` box and empty sample tables: the samples
-    // live in `moof` boxes we do not read. Detected here so the caller gets a
-    // straight answer instead of a track that silently reports zero duration.
-    if video.samples.is_empty() {
-        return Err(if find(moov, b"mvex").is_some() {
-            DemuxError::FragmentedMp4
-        } else {
-            DemuxError::EmptyTrack
-        });
+    // A fragmented file has a `mvex` box and empty sample tables: its samples
+    // live in `moof` boxes, which the caller supplies separately.
+    let is_fragmented = video.samples.is_empty() && find(moov, b"mvex").is_some();
+    if video.samples.is_empty() && !is_fragmented {
+        return Err(DemuxError::EmptyTrack);
     }
 
-    Ok(Movie { video, audio })
+    Ok(Movie {
+        video,
+        audio,
+        is_fragmented,
+        video_track_id,
+        audio_track_id,
+    })
+}
+
+/// The `track_ID` from a `trak`'s `tkhd`, needed to match tracks in fragments.
+fn track_id_of(trak: &[u8]) -> Option<u32> {
+    let tkhd = find(trak, b"tkhd")?;
+    let mut r = Reader::new(tkhd);
+    let (version, _) = r.version_flags()?;
+    // v1 uses 64-bit creation/modification times.
+    r.skip(if version == 1 { 16 } else { 8 })?;
+    r.u32()
 }
 
 fn parse_video_trak(trak: &[u8]) -> Result<VideoTrack, DemuxError> {

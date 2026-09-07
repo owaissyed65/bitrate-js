@@ -182,13 +182,15 @@ adapter you supply.
 
 ### Input requirements
 
-Sources must be **progressive MP4** with an H.264 track — the layout cameras, phones and
-editors produce. Fragmented MP4 (samples in `moof` boxes rather than `stbl`) is not read
-yet and is reported as such rather than appearing as a zero-length video. Convert one with:
+Sources need an H.264 video track in an MP4 container. Both layouts are read:
 
-```bash
-ffmpeg -i fragmented.mp4 -c copy progressive.mp4
-```
+- **Progressive** — samples described in `stbl`. What most cameras and editors write.
+- **Fragmented** — samples described in `moof` boxes. What streaming-oriented writers,
+  many phones, and anything that had to start writing before knowing the final length
+  produce.
+
+For a fragmented source only the `moof` boxes are read, never the `mdat` payloads, so a
+multi-gigabyte file costs a few megabytes of reading to index.
 
 ## Browser support
 

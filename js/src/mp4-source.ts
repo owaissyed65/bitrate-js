@@ -101,6 +101,34 @@ export async function readMoov(file: Blob): Promise<Uint8Array> {
   return new Uint8Array(await slice.arrayBuffer());
 }
 
+/** Cap on a single `moof`, so a hostile size field cannot force a huge read. */
+const MAX_MOOF_BYTES = 32 * 1024 * 1024;
+
+/**
+ * Read every `moof` box in the file, in order.
+ *
+ * Fragmented sources keep their per-sample data in a `moof` before each `mdat`.
+ * Only the `moof` boxes are read — they are small next to the media, so this
+ * walks a multi-gigabyte file while touching only a few megabytes.
+ */
+export async function* readFragments(
+  file: Blob,
+  options: { signal?: AbortSignal | undefined } = {},
+): AsyncGenerator<{ offset: number; bytes: Uint8Array }> {
+  for (const box of await topLevelBoxes(file)) {
+    options.signal?.throwIfAborted();
+    if (box.kind !== "moof") continue;
+
+    if (box.size > MAX_MOOF_BYTES) {
+      throw new Error(`A 'moof' box at offset ${box.start} is implausibly large (${box.size} bytes)`);
+    }
+    const slice = file.slice(box.start, box.start + box.size);
+    // Offsets inside a fragment are measured from where its header starts, so
+    // the header is included rather than skipped.
+    yield { offset: box.start, bytes: new Uint8Array(await slice.arrayBuffer()) };
+  }
+}
+
 /** One frame's location in the source file. */
 export interface SampleLocation {
   offset: number;

@@ -24,7 +24,7 @@ mod hls;
 mod mux;
 mod sanitize;
 
-pub use demux::{AudioTrack, DemuxError, Movie, Mp4Demuxer, SampleRef, VideoTrack};
+pub use demux::{AudioTrack, DemuxError, Movie, Mp4Demuxer, SampleRef, TrackDefaults, VideoTrack};
 pub use hls::{master_playlist, MediaPlaylist, Rung};
 pub use mux::{Fmp4Segmenter, MuxError, Segment};
 pub use sanitize::sanitize_key;

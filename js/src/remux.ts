@@ -10,7 +10,7 @@
  */
 
 import { MIME_MANIFEST, MIME_SEGMENT, type UploadItem } from "./types.js";
-import { readMoov, readSamples, type SampleLocation } from "./mp4-source.js";
+import { readFragments, readMoov, readSamples, type SampleLocation } from "./mp4-source.js";
 import { ensureWasm } from "./wasm-loader.js";
 import { Fmp4Segmenter, Mp4Demuxer } from "./wasm/bitrate_core.js";
 
@@ -79,11 +79,48 @@ export interface SourceInfo {
   audioSampleCount: number;
 }
 
+/**
+ * Open a source and return a demuxer with its sample index populated.
+ *
+ * A fragmented file keeps its samples in `moof` boxes rather than the sample
+ * tables, so those are walked and fed in before the index is usable.
+ */
+async function openDemuxer(
+  file: Blob,
+  signal?: AbortSignal | undefined,
+): Promise<Mp4Demuxer> {
+  const moov = await readMoov(file);
+  const demuxer = new Mp4Demuxer(moov);
+
+  if (demuxer.isFragmented) {
+    let fragments = 0;
+    try {
+      for await (const fragment of readFragments(file, { signal })) {
+        demuxer.addFragment(fragment.bytes, fragment.offset);
+        fragments++;
+      }
+    } catch (error) {
+      demuxer.free();
+      throw error;
+    }
+
+    if (demuxer.sampleCount === 0) {
+      demuxer.free();
+      throw new Error(
+        fragments === 0
+          ? "This file declares fragmented media but contains no 'moof' boxes, so it has no samples to package."
+          : `Read ${fragments} fragments but found no video samples in them. The file may be truncated.`,
+      );
+    }
+  }
+
+  return demuxer;
+}
+
 /** Inspect a source without packaging it — useful for validation and UI. */
 export async function inspect(file: Blob): Promise<SourceInfo> {
   await ensureWasm();
-  const moov = await readMoov(file);
-  const demuxer = new Mp4Demuxer(moov);
+  const demuxer = await openDemuxer(file);
   try {
     return {
       width: demuxer.width,
@@ -120,8 +157,7 @@ export async function* remux(file: Blob, options: RemuxOptions = {}): AsyncGener
   await ensureWasm();
   signal?.throwIfAborted();
 
-  const moov = await readMoov(file);
-  const demuxer = new Mp4Demuxer(moov);
+  const demuxer = await openDemuxer(file, signal);
 
   let segmenter: Fmp4Segmenter | undefined;
   try {

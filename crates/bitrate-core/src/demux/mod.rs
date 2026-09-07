@@ -5,11 +5,13 @@
 //! ranges lazily, which is what allows a 1 GB source to be processed at flat
 //! memory (PLAN.md §3d).
 
+mod fragmented;
 mod mp4;
 mod reader;
 
 use wasm_bindgen::prelude::*;
 
+pub use fragmented::TrackDefaults;
 pub use mp4::{AudioTrack, DemuxError, Movie, SampleRef, VideoTrack};
 
 /// Reads an MP4 `moov` box and exposes its sample index to JS.
@@ -21,6 +23,13 @@ pub use mp4::{AudioTrack, DemuxError, Movie, SampleRef, VideoTrack};
 pub struct Mp4Demuxer {
     track: VideoTrack,
     audio: Option<AudioTrack>,
+    /// True when samples arrive via [`Mp4Demuxer::add_fragment`] instead of the
+    /// sample tables.
+    fragmented: bool,
+    video_track_id: u32,
+    audio_track_id: u32,
+    /// `trex` defaults, applied to fragments that omit them.
+    defaults: Vec<TrackDefaults>,
 }
 
 #[wasm_bindgen]
@@ -28,12 +37,58 @@ impl Mp4Demuxer {
     /// Parse a `moov` payload (the box contents, without its 8-byte header).
     #[wasm_bindgen(constructor)]
     pub fn new(moov: &[u8]) -> Result<Mp4Demuxer, JsError> {
-        mp4::parse_moov(moov)
-            .map(|movie| Mp4Demuxer {
-                track: movie.video,
-                audio: movie.audio,
-            })
-            .map_err(|e| JsError::new(&e.to_string()))
+        let movie = mp4::parse_moov(moov).map_err(|e| JsError::new(&e.to_string()))?;
+        Ok(Mp4Demuxer {
+            track: movie.video,
+            audio: movie.audio,
+            fragmented: movie.is_fragmented,
+            video_track_id: movie.video_track_id,
+            audio_track_id: movie.audio_track_id,
+            // Fragments often omit durations and sizes, deferring to these.
+            defaults: fragmented::parse_trex(moov),
+        })
+    }
+
+    /// Whether this source keeps its samples in `moof` boxes.
+    ///
+    /// When true the sample index is empty until fragments are supplied with
+    /// [`Mp4Demuxer::add_fragment`].
+    #[wasm_bindgen(getter, js_name = isFragmented)]
+    pub fn is_fragmented(&self) -> bool {
+        self.fragmented
+    }
+
+    /// Add one fragment's samples to the index.
+    ///
+    /// `moof` is the complete box including its 8-byte header, and
+    /// `moof_offset` is where that box begins in the file — most files express
+    /// sample offsets relative to it.
+    ///
+    /// Fragments must be added in file order, since the index they build is the
+    /// track's decode order.
+    #[wasm_bindgen(js_name = addFragment)]
+    pub fn add_fragment(&mut self, moof: &[u8], moof_offset: f64) -> Result<usize, JsError> {
+        if !(moof_offset.is_finite() && moof_offset >= 0.0) {
+            return Err(JsError::new("moof_offset must be a non-negative, finite number"));
+        }
+        // The box header is not part of what `parse_moof` walks, but offsets are
+        // relative to where the header starts.
+        let payload = moof.get(8..).unwrap_or(&[]);
+        let runs = fragmented::parse_moof(payload, moof_offset as u64, &self.defaults);
+
+        let mut added = 0;
+        for run in runs {
+            if run.track_id == self.video_track_id {
+                added += run.samples.len();
+                self.track.samples.extend(run.samples);
+            } else if self.audio.is_some() && run.track_id == self.audio_track_id {
+                if let Some(audio) = self.audio.as_mut() {
+                    added += run.samples.len();
+                    audio.samples.extend(run.samples);
+                }
+            }
+        }
+        Ok(added)
     }
 
     /// Track timescale, in units per second.

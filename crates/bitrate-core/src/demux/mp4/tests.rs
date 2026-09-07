@@ -585,10 +585,14 @@ fn fragmented_moov(with_mvex: bool) -> Vec<u8> {
 }
 
 #[test]
-fn a_fragmented_mp4_is_named_rather_than_silently_empty() {
-    // Previously this parsed "successfully" with zero samples, so the caller
-    // saw a 0.0s video and no explanation.
-    assert_eq!(parse_moov(&fragmented_moov(true)), Err(DemuxError::FragmentedMp4));
+fn a_fragmented_mp4_is_flagged_so_the_caller_can_supply_fragments() {
+    // The track configuration is all present; only the samples are elsewhere,
+    // so this is reported rather than treated as a failure.
+    let movie = parse_moov(&fragmented_moov(true)).expect("track config should parse");
+    assert!(movie.is_fragmented);
+    assert!(movie.video.samples.is_empty(), "samples arrive via moof boxes");
+    assert_eq!(movie.video.width, 1920);
+    assert_eq!(movie.video_track_id, 1);
 }
 
 #[test]
