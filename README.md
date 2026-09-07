@@ -57,6 +57,19 @@ rewriting.
 
 ---
 
+## Try it in 10 seconds
+
+Open **[`examples/standalone/bitrate.html`](examples/standalone/bitrate.html)** by
+double-clicking it. One file, no server, no install — the library and its WASM are inlined,
+so it runs straight from disk. Pick a video and watch it become HLS.
+
+Rebuild it with `npm run build` in `js/`.
+
+For the full feature tour (queue, resume, transcode, adapters), serve
+[`examples/demo`](examples/demo/) over HTTP — any static server will do.
+
+---
+
 ## Usage
 
 ### Queue: many files, uploaded anywhere
@@ -198,6 +211,18 @@ Or skip the import map and use the path directly:
 ```html
 <script type="module">
   import { remux } from "/node_modules/bitrate-js/dist/index.js";
+</script>
+```
+
+### Without modules at all
+
+There is also a classic-script build that defines `window.bitrate`. ES modules cannot load
+over `file://`, so this is what a page opened straight from disk needs:
+
+```html
+<script src="/node_modules/bitrate-js/dist/bitrate.global.js"></script>
+<script>
+  bitrate.isSupported();
 </script>
 ```
 

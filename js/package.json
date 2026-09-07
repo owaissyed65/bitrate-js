@@ -40,17 +40,19 @@
     "./adapters/appwrite": {
       "types": "./dist/adapters/appwrite.d.ts",
       "import": "./dist/adapters/appwrite.js"
-    }
+    },
+    "./global": "./dist/bitrate.global.js"
   },
   "files": [
     "dist"
   ],
   "scripts": {
     "build:wasm": "wasm-pack build ../crates/bitrate-core --target web --out-dir ../../js/src/wasm --out-name bitrate_core && node scripts/inline-wasm.mjs",
-    "build": "npm run build:wasm && tsup",
+    "build": "npm run build:wasm && tsup && node scripts/build-standalone.mjs",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "prepublishOnly": "npm run build && npm run test"
+    "prepublishOnly": "npm run build && npm run test",
+    "build:standalone": "node scripts/build-standalone.mjs"
   },
   "peerDependencies": {
     "@aws-sdk/client-s3": ">=3",
