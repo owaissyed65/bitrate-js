@@ -107,3 +107,6 @@ export function isSupported(): SupportReport {
     reasons,
   };
 }
+
+export { transcode, packageFrames, isTranscodeSupported, planLadder, DEFAULT_LADDER } from "./transcode.js";
+export type { TranscodeOptions } from "./transcode.js";
