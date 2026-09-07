@@ -4,6 +4,7 @@ import { AdaptersPanel } from "./components/AdaptersPanel";
 import { AppwritePanel } from "./components/AppwritePanel";
 import { CapabilitiesPanel } from "./components/CapabilitiesPanel";
 import { PackagePanel } from "./components/PackagePanel";
+import { PlayUrlPanel } from "./components/PlayUrlPanel";
 import { QueuePanel } from "./components/QueuePanel";
 import { ResumePanel } from "./components/ResumePanel";
 import { SecurityPanel } from "./components/SecurityPanel";
@@ -12,6 +13,7 @@ const TABS = [
   { id: "package", label: "Package a video", element: <PackagePanel /> },
   { id: "queue", label: "Queue & upload", element: <QueuePanel /> },
   { id: "resume", label: "Resume", element: <ResumePanel /> },
+  { id: "play", label: "Play a URL", element: <PlayUrlPanel /> },
   { id: "adapters", label: "Adapters", element: <AdaptersPanel /> },
   { id: "appwrite", label: "Appwrite upload", element: <AppwritePanel /> },
   { id: "capabilities", label: "Capabilities", element: <CapabilitiesPanel /> },
