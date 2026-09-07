@@ -3,7 +3,7 @@
 //! These parse the bytes back out rather than comparing against a golden blob,
 //! so a failure points at the specific box that is wrong.
 
-use super::{Fmp4Segmenter, Sample};
+use super::{Fmp4Segmenter, Sample, Segment};
 
 // ---- minimal ISO-BMFF reader, for assertions only -------------------------
 
@@ -521,4 +521,231 @@ fn restore_rejects_a_nonsensical_duration() {
     let mut s = segmenter(1.0);
     assert!(s.try_restore_segment(f64::NAN).is_err());
     assert!(s.try_restore_segment(-1.0).is_err());
+}
+
+// ---- audio ----------------------------------------------------------------
+
+/// A minimal but structurally valid `mp4a` sample entry.
+fn mp4a_entry() -> Vec<u8> {
+    let mut p = vec![0u8; 6];
+    p.extend_from_slice(&1u16.to_be_bytes()); // data_reference_index
+    p.extend_from_slice(&[0u8; 8]);
+    p.extend_from_slice(&2u16.to_be_bytes()); // channels
+    p.extend_from_slice(&16u16.to_be_bytes()); // sample size
+    p.extend_from_slice(&[0u8; 4]);
+    p.extend_from_slice(&(44_100u32 << 16).to_be_bytes());
+    let mut out = ((8 + p.len()) as u32).to_be_bytes().to_vec();
+    out.extend_from_slice(b"mp4a");
+    out.extend_from_slice(&p);
+    out
+}
+
+const AUDIO_TIMESCALE: u32 = 44_100;
+/// One AAC frame is 1024 samples.
+const AUDIO_FRAME: u32 = 1024;
+
+fn segmenter_with_audio(target_seconds: f64) -> Fmp4Segmenter {
+    let mut s = segmenter(target_seconds);
+    s.try_set_audio(AUDIO_TIMESCALE, &mp4a_entry())
+        .unwrap_or_else(|_| panic!("audio config should be accepted"));
+    s
+}
+
+/// The payloads of the `traf` boxes in a segment, in order.
+fn trafs(segment: &[u8]) -> Vec<&[u8]> {
+    boxes(child(segment, "moof"))
+        .into_iter()
+        .filter(|(k, _)| k == "traf")
+        .map(|(_, payload)| payload)
+        .collect()
+}
+
+#[test]
+fn init_segment_gains_a_second_track_when_audio_is_configured() {
+    let mut s = segmenter_with_audio(6.0);
+    let init = s.init_segment();
+    let moov = child(&init, "moov");
+
+    let count = boxes(moov).iter().filter(|(k, _)| k == "trak").count();
+    assert_eq!(count, 2, "video and audio");
+
+    // One trex per track, or a player will not accept the fragments.
+    let mvex = child(moov, "mvex");
+    assert_eq!(boxes(mvex).iter().filter(|(k, _)| k == "trex").count(), 2);
+}
+
+#[test]
+fn the_audio_track_declares_a_sound_handler_and_smhd() {
+    let mut s = segmenter_with_audio(6.0);
+    let init = s.init_segment();
+    let moov = child(&init, "moov");
+    let audio_trak = boxes(moov)
+        .into_iter()
+        .filter(|(k, _)| k == "trak")
+        .nth(1)
+        .expect("audio trak")
+        .1;
+
+    let mdia = child(audio_trak, "mdia");
+    let hdlr = child(mdia, "hdlr");
+    // FullBox payload: version/flags(4) + pre_defined(4), then handler_type.
+    assert_eq!(&hdlr[8..12], b"soun");
+
+    let minf = child(mdia, "minf");
+    assert!(has(minf, "smhd"), "audio needs a sound media header, not vmhd");
+    assert!(!has(minf, "vmhd"));
+}
+
+#[test]
+fn the_audio_sample_entry_is_embedded_verbatim() {
+    let mut s = segmenter_with_audio(6.0);
+    let init = s.init_segment();
+    let moov = child(&init, "moov");
+    let audio_trak = boxes(moov)
+        .into_iter()
+        .filter(|(k, _)| k == "trak")
+        .nth(1)
+        .expect("audio")
+        .1;
+    let stsd = path(audio_trak, "mdia/minf/stbl/stsd");
+
+    assert_eq!(be32(stsd, 4), 1, "one entry");
+    // Byte-for-byte: anything else risks losing the decoder configuration.
+    assert_eq!(&stsd[8..], mp4a_entry().as_slice());
+}
+
+#[test]
+fn without_audio_the_init_segment_is_unchanged() {
+    let mut s = segmenter(6.0);
+    let init = s.init_segment();
+    let moov = child(&init, "moov");
+    assert_eq!(boxes(moov).iter().filter(|(k, _)| k == "trak").count(), 1);
+    assert_eq!(boxes(child(moov, "mvex")).iter().filter(|(k, _)| k == "trex").count(), 1);
+}
+
+#[test]
+fn segments_carry_both_tracks() {
+    let mut s = segmenter_with_audio(1.0);
+    let _ = s.init_segment();
+    for i in 0..60 {
+        s.add_sample(&[0xaa; 100], FRAME, i % 30 == 0, 0).expect("video");
+        s.add_audio_sample(&[0xbb; 40], AUDIO_FRAME).expect("audio");
+    }
+    s.finish();
+
+    let seg = s.take_segment().expect("segment");
+    let runs = trafs(&seg.data);
+    assert_eq!(runs.len(), 2, "one traf per track");
+
+    // Track ids must be 1 (video) then 2 (audio).
+    assert_eq!(be32(child(runs[0], "tfhd"), 4), 1);
+    assert_eq!(be32(child(runs[1], "tfhd"), 4), 2);
+}
+
+#[test]
+fn audio_and_video_bytes_are_laid_out_where_their_offsets_claim() {
+    let mut s = segmenter_with_audio(10.0);
+    s.add_sample(&[0x11; 60], FRAME, true, 0).expect("video");
+    s.add_sample(&[0x22; 70], FRAME, false, 0).expect("video");
+    s.add_audio_sample(&[0x33; 40], AUDIO_FRAME).expect("audio");
+    s.add_audio_sample(&[0x44; 50], AUDIO_FRAME).expect("audio");
+    s.finish();
+
+    let seg = s.take_segment().expect("segment");
+    let data = &seg.data;
+    let styp_size = be32(data, 0) as usize;
+    let moof_size = be32(data, styp_size) as usize;
+    let mdat_data = styp_size + moof_size + 8;
+
+    let runs = trafs(data);
+
+    // Video data starts immediately after the mdat header...
+    let video_offset = be32(child(runs[0], "trun"), 8) as usize;
+    assert_eq!(styp_size + video_offset, mdat_data);
+
+    // ...and audio follows the 130 bytes of video.
+    let audio_offset = be32(child(runs[1], "trun"), 8) as usize;
+    assert_eq!(styp_size + audio_offset, mdat_data + 130);
+
+    // Confirm the bytes really are in that order.
+    let mdat = child(data, "mdat");
+    assert!(mdat[0..60].iter().all(|&b| b == 0x11));
+    assert!(mdat[60..130].iter().all(|&b| b == 0x22));
+    assert!(mdat[130..170].iter().all(|&b| b == 0x33));
+    assert!(mdat[170..220].iter().all(|&b| b == 0x44));
+}
+
+#[test]
+fn every_audio_sample_is_marked_as_a_sync_sample() {
+    let mut s = segmenter_with_audio(10.0);
+    s.add_sample(&[1; 10], FRAME, true, 0).expect("video");
+    s.add_audio_sample(&[2; 10], AUDIO_FRAME).expect("audio");
+    s.finish();
+
+    let seg = s.take_segment().expect("segment");
+    let trun = child(trafs(&seg.data)[1], "trun");
+    assert_eq!(be32(trun, 12 + 8), 0x0200_0000, "audio frames are all keyframes");
+}
+
+#[test]
+fn audio_timeline_advances_in_its_own_timescale() {
+    let mut s = segmenter_with_audio(1.0);
+    // 1s of video per segment; 30 audio frames of 1024 samples per segment.
+    for i in 0..60 {
+        s.add_sample(&[0xaa; 50], FRAME, i % 30 == 0, 0).expect("video");
+        s.add_audio_sample(&[0xbb; 20], AUDIO_FRAME).expect("audio");
+    }
+    s.finish();
+
+    let first = s.take_segment().expect("first");
+    let second = s.take_segment().expect("second");
+
+    let audio_tfdt = |seg: &Segment| be64(child(trafs(&seg.data)[1], "tfdt"), 4);
+    let video_tfdt = |seg: &Segment| be64(child(trafs(&seg.data)[0], "tfdt"), 4);
+
+    assert_eq!(audio_tfdt(&first), 0, "audio starts at zero");
+    // 30 frames x 1024 samples - in audio ticks, not video ticks.
+    assert_eq!(audio_tfdt(&second), 30 * u64::from(AUDIO_FRAME));
+    assert_eq!(video_tfdt(&second), u64::from(TIMESCALE), "video uses its own timescale");
+}
+
+#[test]
+fn audio_arriving_before_the_first_video_frame_is_not_dropped() {
+    // Sources often start audio slightly before video.
+    let mut s = segmenter_with_audio(10.0);
+    s.add_audio_sample(&[7; 30], AUDIO_FRAME).expect("audio");
+    s.add_audio_sample(&[7; 30], AUDIO_FRAME).expect("audio");
+    s.add_sample(&[1; 20], FRAME, true, 0).expect("video");
+    s.finish();
+
+    let seg = s.take_segment().expect("segment");
+    assert_eq!(be32(child(trafs(&seg.data)[1], "trun"), 4), 2, "both audio frames kept");
+}
+
+#[test]
+fn audio_configuration_is_rejected_once_packaging_has_started() {
+    let mut s = segmenter(1.0);
+    s.add_sample(&[1; 10], FRAME, true, 0).expect("video");
+    // Changing the moov mid-stream would invalidate the init segment already sent.
+    assert!(s.try_set_audio(AUDIO_TIMESCALE, &mp4a_entry()).is_err());
+}
+
+#[test]
+fn invalid_audio_configuration_is_rejected() {
+    let mut s = segmenter(6.0);
+    assert!(s.try_set_audio(0, &mp4a_entry()).is_err(), "zero timescale");
+    assert!(s.try_set_audio(AUDIO_TIMESCALE, &[]).is_err(), "empty entry");
+    assert!(s.try_set_audio(AUDIO_TIMESCALE, &[1, 2, 3]).is_err(), "too short for a box");
+}
+
+#[test]
+fn audio_samples_are_refused_without_an_audio_track() {
+    let mut s = segmenter(6.0);
+    assert!(s.add_audio_sample(&[1, 2, 3], AUDIO_FRAME).is_err());
+}
+
+#[test]
+fn has_audio_reports_the_configuration() {
+    assert!(!segmenter(6.0).has_audio());
+    assert!(segmenter_with_audio(6.0).has_audio());
 }

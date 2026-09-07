@@ -182,6 +182,7 @@ export class HlsQueue {
       resume: {
         completedSegmentDurations: stored.completedSegmentDurations ?? [],
         samplesProcessed: stored.samplesProcessed,
+        audioSamplesProcessed: stored.audioSamplesProcessed ?? 0,
       },
     });
     return stored.jobId;
@@ -261,7 +262,15 @@ export class HlsQueue {
         })
       : undefined;
 
-    await store?.putJob(this.#snapshot(job, durations, job.resume?.samplesProcessed ?? 0, "processing"));
+    await store?.putJob(
+      this.#snapshot(
+        job,
+        durations,
+        job.resume?.samplesProcessed ?? 0,
+        job.resume?.audioSamplesProcessed ?? 0,
+        "processing",
+      ),
+    );
 
     const remuxOptions: RemuxOptions = {
       prefix: job.prefix,
@@ -277,11 +286,15 @@ export class HlsQueue {
 
     // Checkpointing is driven by onSegment rather than by the output loop:
     // it reports exactly the sample count a later resume must restart from.
-    let pendingCheckpoint: { durations: number[]; samplesProcessed: number } | null = null;
+    let pendingCheckpoint: {
+      durations: number[];
+      samplesProcessed: number;
+      audioSamplesProcessed: number;
+    } | null = null;
     if (store) {
-      remuxOptions.onSegment = ({ duration, samplesProcessed }) => {
+      remuxOptions.onSegment = ({ duration, samplesProcessed, audioSamplesProcessed }) => {
         durations.push(duration);
-        pendingCheckpoint = { durations: [...durations], samplesProcessed };
+        pendingCheckpoint = { durations: [...durations], samplesProcessed, audioSamplesProcessed };
       };
     }
 
@@ -297,9 +310,15 @@ export class HlsQueue {
       // Written only after the file is safely uploaded, so a checkpoint never
       // claims progress that was lost.
       if (store && pendingCheckpoint) {
-        const cp = pendingCheckpoint as { durations: number[]; samplesProcessed: number };
+        const cp = pendingCheckpoint as {
+          durations: number[];
+          samplesProcessed: number;
+          audioSamplesProcessed: number;
+        };
         pendingCheckpoint = null;
-        await store.putJob(this.#snapshot(job, cp.durations, cp.samplesProcessed, "processing"));
+        await store.putJob(
+          this.#snapshot(job, cp.durations, cp.samplesProcessed, cp.audioSamplesProcessed, "processing"),
+        );
       }
     }
 
@@ -324,6 +343,7 @@ export class HlsQueue {
     job: InternalJob,
     durations: number[],
     samplesProcessed: number,
+    audioSamplesProcessed: number,
     status: StoredJob["status"],
   ): StoredJob {
     const now = Date.now();
@@ -336,6 +356,7 @@ export class HlsQueue {
       status,
       lastCompletedSegment: durations.length - 1,
       samplesProcessed,
+      audioSamplesProcessed,
       completedSegmentDurations: durations,
       createdAt: now,
       updatedAt: now,

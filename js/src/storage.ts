@@ -31,6 +31,10 @@ export interface StoredJob {
   lastCompletedSegment: number;
   /** Samples consumed so far, so reading can restart at the right frame. */
   samplesProcessed: number;
+  /** Audio frames consumed so far. Recorded, not derived: audio and video
+   * advance at different rates, so a time-based estimate would drop or
+   * duplicate a frame at the resume point. */
+  audioSamplesProcessed?: number;
   /**
    * Duration of each completed segment, in order.
    *

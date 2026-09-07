@@ -21,6 +21,7 @@ const MAX_DIMENSION: u16 = 16_384;
 const MAX_CODEC_CONFIG: usize = 4_096;
 const MAX_SAMPLE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_SAMPLES_PER_SEGMENT: usize = 100_000;
+const MAX_SAMPLE_ENTRY: usize = 64 * 1024;
 
 /// Why a segmenter rejected its input.
 ///
@@ -47,6 +48,12 @@ pub enum MuxError {
     RestoreAfterSamples,
     /// A restored segment's duration was negative or non-finite.
     BadRestoreDuration,
+    /// `set_audio` was called after packaging had begun.
+    AudioAfterStart,
+    /// The audio sample entry was missing or implausibly sized.
+    BadAudioConfig,
+    /// An audio sample was pushed without an audio track configured.
+    NoAudioTrack,
 }
 
 impl core::fmt::Display for MuxError {
@@ -65,9 +72,21 @@ impl core::fmt::Display for MuxError {
             Self::BadRestoreDuration => {
                 "restored segment duration must be finite and non-negative"
             }
+            Self::AudioAfterStart => "setAudio must be called before packaging begins",
+            Self::BadAudioConfig => "audio sample entry is missing or implausibly large",
+            Self::NoAudioTrack => "pushAudioSample requires setAudio to have been called",
         };
         f.write_str(msg)
     }
+}
+
+/// Audio parameters, fixed for the life of a rendition.
+pub struct AudioTrackConfig {
+    /// Track timescale — usually the sample rate.
+    pub timescale: u32,
+    /// The complete codec sample entry box (`mp4a` + `esds`, or equivalent),
+    /// copied verbatim from the source so nothing is lost in translation.
+    pub sample_entry: Vec<u8>,
 }
 
 /// Track-level parameters, fixed for the life of a rendition.
@@ -137,6 +156,11 @@ pub struct Fmp4Segmenter {
     next_index: u32,
     base_decode_time: u64,
 
+    /// Audio track, when the source has one.
+    audio: Option<AudioTrackConfig>,
+    pending_audio: Vec<Sample>,
+    audio_base_decode_time: u64,
+
     ready: Vec<Segment>,
     playlist: MediaPlaylist,
 }
@@ -186,9 +210,62 @@ impl Fmp4Segmenter {
             pending_duration: 0,
             next_index: 0,
             base_decode_time: 0,
+            audio: None,
+            pending_audio: Vec::new(),
+            audio_base_decode_time: 0,
             ready: Vec::new(),
             playlist: MediaPlaylist::new(target_seconds.ceil() as u32),
         })
+    }
+
+    /// Add an audio track, to be muxed into the same segments as the video.
+    ///
+    /// Must be called before the init segment is produced, since it changes the
+    /// `moov`. `sample_entry` is the complete codec sample entry box taken from
+    /// the source.
+    pub fn try_set_audio(&mut self, timescale: u32, sample_entry: &[u8]) -> Result<(), MuxError> {
+        if self.next_index > 0 || !self.pending.is_empty() {
+            return Err(MuxError::AudioAfterStart);
+        }
+        if timescale == 0 {
+            return Err(MuxError::ZeroTimescale);
+        }
+        if sample_entry.len() < 8 || sample_entry.len() > MAX_SAMPLE_ENTRY {
+            return Err(MuxError::BadAudioConfig);
+        }
+        self.audio = Some(AudioTrackConfig {
+            timescale,
+            sample_entry: sample_entry.to_vec(),
+        });
+        Ok(())
+    }
+
+    /// Add one encoded audio frame, in decode order.
+    ///
+    /// Audio is buffered alongside video and flushed into whichever segment the
+    /// video boundary closes, so both tracks stay aligned.
+    pub fn add_audio_sample(&mut self, data: &[u8], duration: u32) -> Result<(), MuxError> {
+        if self.audio.is_none() {
+            return Err(MuxError::NoAudioTrack);
+        }
+        if data.is_empty() {
+            return Err(MuxError::EmptySample);
+        }
+        if data.len() > MAX_SAMPLE_BYTES {
+            return Err(MuxError::SampleTooLarge);
+        }
+        if self.pending_audio.len() >= MAX_SAMPLES_PER_SEGMENT {
+            return Err(MuxError::SegmentTooLong);
+        }
+
+        self.pending_audio.push(Sample {
+            data: data.to_vec(),
+            duration,
+            // Every audio frame is independently decodable.
+            is_sync: true,
+            composition_offset: 0,
+        });
+        Ok(())
     }
 
     /// Add one encoded frame, in decode order.
@@ -222,6 +299,23 @@ impl Fmp4Segmenter {
             is_sync,
             composition_offset,
         });
+        Ok(())
+    }
+
+    /// Set where the audio timeline resumes, in audio timescale ticks.
+    ///
+    /// A resumed run cannot derive this from segment durations: the number of
+    /// audio frames in a segment is not a clean function of its length, so the
+    /// exact tick count from the interrupted run must be carried across or the
+    /// audio `tfdt` drifts and playback desynchronises.
+    pub fn try_restore_audio_time(&mut self, ticks: f64) -> Result<(), MuxError> {
+        if self.audio.is_none() {
+            return Err(MuxError::NoAudioTrack);
+        }
+        if !ticks.is_finite() || ticks < 0.0 {
+            return Err(MuxError::BadRestoreDuration);
+        }
+        self.audio_base_decode_time = ticks as u64;
         Ok(())
     }
 
@@ -279,12 +373,34 @@ impl Fmp4Segmenter {
             .map_err(|e| JsError::new(&e.to_string()))
     }
 
+    /// Add an audio track to be muxed alongside the video.
+    /// See [`Fmp4Segmenter::try_set_audio`].
+    #[wasm_bindgen(js_name = setAudio)]
+    pub fn set_audio(&mut self, timescale: u32, sample_entry: &[u8]) -> Result<(), JsError> {
+        self.try_set_audio(timescale, sample_entry)
+            .map_err(|e| JsError::new(&e.to_string()))
+    }
+
+    /// Add one encoded audio frame, in decode order.
+    /// See [`Fmp4Segmenter::add_audio_sample`].
+    #[wasm_bindgen(js_name = pushAudioSample)]
+    pub fn push_audio_sample(&mut self, data: &[u8], duration: u32) -> Result<(), JsError> {
+        self.add_audio_sample(data, duration)
+            .map_err(|e| JsError::new(&e.to_string()))
+    }
+
+    /// Whether an audio track is configured.
+    #[wasm_bindgen(getter, js_name = hasAudio)]
+    pub fn has_audio(&self) -> bool {
+        self.audio.is_some()
+    }
+
     /// The initialization segment (`<prefix>_init.mp4`). Constant for the
     /// rendition; upload once, before any media segment.
     #[wasm_bindgen(js_name = initSegment)]
     pub fn init_segment(&mut self) -> Vec<u8> {
         self.playlist.set_init(&self.init_name());
-        init::build(&self.config)
+        init::build(&self.config, self.audio.as_ref())
     }
 
     /// File name of the init segment.
@@ -304,6 +420,14 @@ impl Fmp4Segmenter {
     #[wasm_bindgen(js_name = restoreSegment)]
     pub fn restore_segment(&mut self, duration: f64) -> Result<(), JsError> {
         self.try_restore_segment(duration)
+            .map_err(|e| JsError::new(&e.to_string()))
+    }
+
+    /// Set where the audio timeline resumes.
+    /// See [`Fmp4Segmenter::try_restore_audio_time`].
+    #[wasm_bindgen(js_name = restoreAudioTime)]
+    pub fn restore_audio_time(&mut self, ticks: f64) -> Result<(), JsError> {
+        self.try_restore_audio_time(ticks)
             .map_err(|e| JsError::new(&e.to_string()))
     }
 
@@ -360,16 +484,37 @@ impl Fmp4Segmenter {
 
 impl Fmp4Segmenter {
     /// Package the buffered samples into a segment and index it.
+    ///
+    /// Audio buffered since the last boundary goes into the same segment, so
+    /// both tracks advance together and a seek lands on matching audio.
     fn close_segment(&mut self) {
         let samples = std::mem::take(&mut self.pending);
         let ticks = std::mem::take(&mut self.pending_duration);
+        let audio_samples = std::mem::take(&mut self.pending_audio);
         if samples.is_empty() {
+            // Keep any audio for the next segment rather than dropping it.
+            self.pending_audio = audio_samples;
             return;
         }
 
+        let audio_ticks: u64 = audio_samples.iter().map(|s| u64::from(s.duration)).sum();
+        let audio_run = self.audio.as_ref().map(|_| fragment::TrackRun {
+            track_id: fragment::AUDIO_TRACK,
+            base_decode_time: self.audio_base_decode_time,
+            samples: &audio_samples,
+        });
+
         let index = self.next_index;
         // Fragment sequence numbers are 1-based.
-        let data = fragment::build(index + 1, self.base_decode_time, &samples);
+        let data = fragment::build(
+            index + 1,
+            fragment::TrackRun {
+                track_id: fragment::VIDEO_TRACK,
+                base_decode_time: self.base_decode_time,
+                samples: &samples,
+            },
+            audio_run,
+        );
         let duration = ticks as f64 / f64::from(self.config.timescale);
 
         self.playlist.add_segment(&self.segment_name(index), duration);
@@ -380,6 +525,7 @@ impl Fmp4Segmenter {
         });
 
         self.base_decode_time += ticks;
+        self.audio_base_decode_time += audio_ticks;
         self.next_index += 1;
     }
 }

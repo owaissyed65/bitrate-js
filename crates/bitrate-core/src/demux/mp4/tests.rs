@@ -3,7 +3,12 @@
 //! `moov` boxes are built here by hand so each table can be exercised —
 //! including the malformed shapes a hostile file would use.
 
-use super::{parse_moov, DemuxError};
+use super::{parse_moov, DemuxError, VideoTrack};
+
+/// Most tests care only about the video track; audio has its own section below.
+fn parse_video(moov: &[u8]) -> Result<VideoTrack, DemuxError> {
+    parse_moov(moov).map(|m| m.video)
+}
 
 // ---- builders -------------------------------------------------------------
 
@@ -160,7 +165,7 @@ fn simple_moov(n: usize) -> Vec<u8> {
 
 #[test]
 fn parses_track_configuration() {
-    let track = parse_moov(&simple_moov(4)).expect("should parse");
+    let track = parse_video(&simple_moov(4)).expect("should parse");
     assert_eq!(track.timescale, 90_000);
     assert_eq!(track.width, 1280);
     assert_eq!(track.height, 720);
@@ -169,7 +174,7 @@ fn parses_track_configuration() {
 
 #[test]
 fn computes_sample_offsets_by_accumulating_sizes_within_a_chunk() {
-    let track = parse_moov(&simple_moov(4)).expect("parse");
+    let track = parse_video(&simple_moov(4)).expect("parse");
     assert_eq!(track.samples.len(), 4);
 
     // Sizes are 100,101,102,103 starting at chunk offset 1000.
@@ -193,7 +198,7 @@ fn expands_stts_runs_into_per_sample_durations() {
             stco(&[0]),
         ],
     );
-    let track = parse_moov(&moov).expect("parse");
+    let track = parse_video(&moov).expect("parse");
     let durations: Vec<u32> = track.samples.iter().map(|s| s.duration).collect();
     assert_eq!(durations, vec![100, 100, 200, 200, 200]);
 }
@@ -212,14 +217,14 @@ fn spreads_samples_across_chunks_per_stsc() {
             stco(&[10_000, 20_000, 30_000]),
         ],
     );
-    let track = parse_moov(&moov).expect("parse");
+    let track = parse_video(&moov).expect("parse");
     let offsets: Vec<u64> = track.samples.iter().map(|s| s.offset).collect();
     assert_eq!(offsets, vec![10_000, 10_050, 20_000, 20_050, 30_000]);
 }
 
 #[test]
 fn without_stss_every_sample_is_a_keyframe() {
-    let track = parse_moov(&simple_moov(3)).expect("parse");
+    let track = parse_video(&simple_moov(3)).expect("parse");
     assert!(track.samples.iter().all(|s| s.is_sync));
 }
 
@@ -237,7 +242,7 @@ fn stss_marks_only_the_listed_samples_as_keyframes() {
             stss(&[1, 4]), // 1-based
         ],
     );
-    let track = parse_moov(&moov).expect("parse");
+    let track = parse_video(&moov).expect("parse");
     let sync: Vec<bool> = track.samples.iter().map(|s| s.is_sync).collect();
     assert_eq!(sync, vec![true, false, false, true, false, false]);
 }
@@ -256,7 +261,7 @@ fn reads_composition_offsets_for_b_frames() {
             stco(&[0]),
         ],
     );
-    let track = parse_moov(&moov).expect("parse");
+    let track = parse_video(&moov).expect("parse");
     let cts: Vec<i32> = track.samples.iter().map(|s| s.composition_offset).collect();
     assert_eq!(cts, vec![0, -50, 200]);
 }
@@ -275,7 +280,7 @@ fn supports_co64_for_large_files() {
             co64(&[big]),
         ],
     );
-    let track = parse_moov(&moov).expect("parse");
+    let track = parse_video(&moov).expect("parse");
     assert_eq!(track.samples[0].offset, big);
     assert_eq!(track.samples[1].offset, big + 10);
 }
@@ -293,7 +298,7 @@ fn uniform_stsz_applies_one_size_to_every_sample() {
             stco(&[0]),
         ],
     );
-    let track = parse_moov(&moov).expect("parse");
+    let track = parse_video(&moov).expect("parse");
     assert!(track.samples.iter().all(|s| s.size == 42));
     assert_eq!(track.samples[3].offset, 126);
 }
@@ -303,7 +308,7 @@ fn skips_non_video_tracks_and_finds_the_video_one() {
     let audio = moov_with(b"soun", 48_000, vec![stsd(&avc1(0, 0, AVCC))]);
     let video = simple_moov(2);
     let moov = cat(&[audio, video]);
-    let track = parse_moov(&moov).expect("should find the video track");
+    let track = parse_video(&moov).expect("should find the video track");
     assert_eq!(track.width, 1280);
     assert_eq!(track.samples.len(), 2);
 }
@@ -313,8 +318,8 @@ fn skips_non_video_tracks_and_finds_the_video_one() {
 #[test]
 fn reports_missing_video_track() {
     let audio = moov_with(b"soun", 48_000, vec![stsd(&avc1(0, 0, AVCC))]);
-    assert_eq!(parse_moov(&audio), Err(DemuxError::NoVideoTrack));
-    assert_eq!(parse_moov(&[]), Err(DemuxError::NoVideoTrack));
+    assert_eq!(parse_video(&audio), Err(DemuxError::NoVideoTrack));
+    assert_eq!(parse_video(&[]), Err(DemuxError::NoVideoTrack));
 }
 
 #[test]
@@ -325,7 +330,7 @@ fn reports_missing_tables_instead_of_panicking() {
         1000,
         vec![stsd(&avc1(640, 480, AVCC)), stts(&[(1, 100)]), stsc(&[(1, 1)]), stco(&[0])],
     );
-    assert_eq!(parse_moov(&moov), Err(DemuxError::MalformedBox("stsz")));
+    assert_eq!(parse_video(&moov), Err(DemuxError::MalformedBox("stsz")));
 }
 
 #[test]
@@ -340,7 +345,7 @@ fn rejects_a_stsz_claiming_more_samples_than_the_box_holds() {
         1000,
         vec![stsd(&avc1(640, 480, AVCC)), bad_stsz, stts(&[(1, 100)]), stsc(&[(1, 1)]), stco(&[0])],
     );
-    assert_eq!(parse_moov(&moov), Err(DemuxError::MalformedBox("stsz")));
+    assert_eq!(parse_video(&moov), Err(DemuxError::MalformedBox("stsz")));
 }
 
 #[test]
@@ -354,7 +359,7 @@ fn rejects_an_absurd_sample_count() {
         1000,
         vec![stsd(&avc1(640, 480, AVCC)), bomb, stts(&[(1, 100)]), stsc(&[(1, 1)]), stco(&[0])],
     );
-    assert_eq!(parse_moov(&moov), Err(DemuxError::TooLarge));
+    assert_eq!(parse_video(&moov), Err(DemuxError::TooLarge));
 }
 
 #[test]
@@ -370,7 +375,7 @@ fn rejects_an_stts_run_that_would_explode_memory() {
             stco(&[0]),
         ],
     );
-    assert_eq!(parse_moov(&moov), Err(DemuxError::TooLarge));
+    assert_eq!(parse_video(&moov), Err(DemuxError::TooLarge));
 }
 
 #[test]
@@ -380,7 +385,7 @@ fn rejects_missing_chunk_offsets() {
         1000,
         vec![stsd(&avc1(640, 480, AVCC)), stsz_uniform(10, 1), stts(&[(1, 100)]), stsc(&[(1, 1)])],
     );
-    assert_eq!(parse_moov(&moov), Err(DemuxError::MalformedBox("stco")));
+    assert_eq!(parse_video(&moov), Err(DemuxError::MalformedBox("stco")));
 }
 
 #[test]
@@ -396,7 +401,7 @@ fn rejects_a_track_with_no_avcc() {
         1000,
         vec![stsd(&no_avcc), stsz_uniform(10, 1), stts(&[(1, 100)]), stsc(&[(1, 1)]), stco(&[0])],
     );
-    assert_eq!(parse_moov(&moov), Err(DemuxError::MalformedBox("avcC")));
+    assert_eq!(parse_video(&moov), Err(DemuxError::MalformedBox("avcC")));
 }
 
 #[test]
@@ -406,7 +411,7 @@ fn rejects_zero_timescale() {
         0,
         vec![stsd(&avc1(640, 480, AVCC)), stsz_uniform(10, 1), stts(&[(1, 100)]), stsc(&[(1, 1)]), stco(&[0])],
     );
-    assert_eq!(parse_moov(&moov), Err(DemuxError::MalformedBox("mdhd")));
+    assert_eq!(parse_video(&moov), Err(DemuxError::MalformedBox("mdhd")));
 }
 
 #[test]
@@ -416,7 +421,7 @@ fn empty_stsc_is_reported_not_panicked() {
         1000,
         vec![stsd(&avc1(640, 480, AVCC)), stsz_uniform(10, 2), stts(&[(2, 100)]), stsc(&[]), stco(&[0])],
     );
-    assert_eq!(parse_moov(&moov), Err(DemuxError::InconsistentTables));
+    assert_eq!(parse_video(&moov), Err(DemuxError::InconsistentTables));
 }
 
 #[test]
@@ -425,7 +430,7 @@ fn truncated_moov_does_not_panic() {
     let full_moov = simple_moov(4);
     for cut in 0..full_moov.len() {
         let prefix = full_moov.get(..cut).unwrap_or(&[]);
-        let _ = parse_moov(prefix);
+        let _ = parse_video(prefix);
     }
 }
 
@@ -439,6 +444,118 @@ fn random_bytes_do_not_panic() {
             seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
             buf.push((seed >> 16) as u8);
         }
-        let _ = parse_moov(&buf);
+        let _ = parse_video(&buf);
     }
+}
+
+// ---- audio track ----------------------------------------------------------
+
+/// A minimal `mp4a` sample entry with an `esds`, as an AAC source would carry.
+fn mp4a(channels: u16, sample_rate: u32) -> Vec<u8> {
+    let mut p = vec![0u8; 6]; // reserved
+    p.extend_from_slice(&1u16.to_be_bytes()); // data_reference_index
+    p.extend_from_slice(&[0u8; 8]); // version/revision/vendor
+    p.extend_from_slice(&channels.to_be_bytes());
+    p.extend_from_slice(&16u16.to_be_bytes()); // samplesize
+    p.extend_from_slice(&[0u8; 4]); // pre_defined + reserved
+    p.extend_from_slice(&(sample_rate << 16).to_be_bytes()); // 16.16 fixed
+    // A small, well-formed esds carrying an AudioSpecificConfig.
+    p.extend_from_slice(&full(
+        b"esds",
+        0,
+        &[0x03, 0x0d, 0x00, 0x01, 0x00, 0x04, 0x05, 0x40, 0x15, 0x00, 0x00, 0x00, 0x05, 0x02, 0x12, 0x10],
+    ));
+    bx(b"mp4a", &p)
+}
+
+/// A `trak` for audio with `n` frames of 1024 samples each.
+fn audio_trak(n: usize, timescale: u32) -> Vec<u8> {
+    moov_with(
+        b"soun",
+        timescale,
+        vec![
+            stsd(&mp4a(2, timescale)),
+            stsz_uniform(200, n as u32),
+            stts(&[(n as u32, 1024)]),
+            stsc(&[(1, n as u32)]),
+            stco(&[500_000]),
+        ],
+    )
+}
+
+#[test]
+fn finds_the_audio_track_alongside_video() {
+    let moov = cat(&[simple_moov(4), audio_trak(10, 44_100)]);
+    let movie = parse_moov(&moov).expect("parse");
+
+    assert_eq!(movie.video.samples.len(), 4);
+    let audio = movie.audio.expect("audio track should be found");
+    assert_eq!(audio.timescale, 44_100);
+    assert_eq!(audio.samples.len(), 10);
+}
+
+#[test]
+fn audio_is_found_regardless_of_track_order() {
+    // Many encoders write audio first.
+    let moov = cat(&[audio_trak(6, 48_000), simple_moov(3)]);
+    let movie = parse_moov(&moov).expect("parse");
+    assert_eq!(movie.video.samples.len(), 3);
+    assert_eq!(movie.audio.expect("audio").samples.len(), 6);
+}
+
+#[test]
+fn audio_sample_entry_is_copied_verbatim() {
+    let entry = mp4a(2, 44_100);
+    let moov = cat(&[simple_moov(2), audio_trak(4, 44_100)]);
+    let audio = parse_moov(&moov).expect("parse").audio.expect("audio");
+
+    // Byte-for-byte: the esds must survive so the decoder can initialize.
+    assert_eq!(audio.sample_entry, entry);
+    assert_eq!(&audio.sample_entry[4..8], b"mp4a");
+}
+
+#[test]
+fn audio_sample_offsets_and_durations_are_indexed() {
+    let moov = cat(&[simple_moov(2), audio_trak(3, 44_100)]);
+    let audio = parse_moov(&moov).expect("parse").audio.expect("audio");
+
+    let offsets: Vec<u64> = audio.samples.iter().map(|s| s.offset).collect();
+    assert_eq!(offsets, vec![500_000, 500_200, 500_400]);
+    assert!(audio.samples.iter().all(|s| s.duration == 1024));
+    // Every audio frame is independently decodable.
+    assert!(audio.samples.iter().all(|s| s.is_sync));
+}
+
+#[test]
+fn a_silent_source_parses_with_no_audio() {
+    let movie = parse_moov(&simple_moov(4)).expect("parse");
+    assert!(movie.audio.is_none());
+}
+
+#[test]
+fn a_broken_audio_track_does_not_sink_the_video() {
+    // Audio trak missing its stsz: the video must still package, silently.
+    let broken = moov_with(
+        b"soun",
+        44_100,
+        vec![stsd(&mp4a(2, 44_100)), stts(&[(1, 1024)]), stsc(&[(1, 1)]), stco(&[0])],
+    );
+    let movie = parse_moov(&cat(&[simple_moov(3), broken])).expect("video should still parse");
+    assert_eq!(movie.video.samples.len(), 3);
+    assert!(movie.audio.is_none(), "unusable audio is dropped, not fatal");
+}
+
+#[test]
+fn only_the_first_audio_track_is_used() {
+    // Commentary or alternate-language tracks must not be mistaken for the main one.
+    let moov = cat(&[simple_moov(2), audio_trak(5, 44_100), audio_trak(9, 48_000)]);
+    let audio = parse_moov(&moov).expect("parse").audio.expect("audio");
+    assert_eq!(audio.timescale, 44_100);
+    assert_eq!(audio.samples.len(), 5);
+}
+
+#[test]
+fn a_source_with_only_audio_is_rejected() {
+    let moov = audio_trak(4, 44_100);
+    assert_eq!(parse_moov(&moov), Err(DemuxError::NoVideoTrack));
 }

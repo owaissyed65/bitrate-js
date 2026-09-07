@@ -83,6 +83,10 @@ export interface MakeMp4Options {
   compositionOffset?: number;
   /** Place `moov` after `mdat`, as non-faststart writers do. */
   moovAtEnd?: boolean;
+  /** Add an AAC-shaped audio track with this many frames. */
+  audioFrames?: number;
+  /** Audio sample rate (also the audio track timescale). */
+  audioSampleRate?: number;
 }
 
 export interface MadeMp4 {
@@ -91,6 +95,19 @@ export interface MadeMp4 {
   samplePayloads: Uint8Array[];
   sampleSizes: number[];
   syncFlags: boolean[];
+  /** The payload of each audio frame, when the source has audio. */
+  audioPayloads: Uint8Array[];
+}
+
+/** One AAC frame covers 1024 samples. */
+export const AAC_FRAME_SAMPLES = 1024;
+
+/** Deterministic payload for audio frame `i`. */
+function audioPayload(i: number): Uint8Array {
+  const size = 60 + (i % 5) * 3;
+  const data = new Uint8Array(size);
+  for (let k = 0; k < size; k++) data[k] = (i * 17 + k * 3) & 0xff;
+  return data;
 }
 
 /** Deterministic, size-varying payload for frame `i`. */
@@ -114,13 +131,20 @@ export function makeMp4(options: MakeMp4Options): MadeMp4 {
     use64BitOffsets = false,
     compositionOffset,
     moovAtEnd = false,
+    audioFrames = 0,
+    audioSampleRate = 44_100,
   } = options;
 
   const samplePayloads = Array.from({ length: frameCount }, (_, i) => samplePayload(i));
   const sampleSizes = samplePayloads.map((p) => p.length);
   const syncFlags = Array.from({ length: frameCount }, (_, i) => i % gop === 0);
 
-  const mdatBody = concat(samplePayloads);
+  const audioPayloads = Array.from({ length: audioFrames }, (_, i) => audioPayload(i));
+  const audioSizes = audioPayloads.map((p) => p.length);
+  const videoBytes = sampleSizes.reduce((a, b) => a + b, 0);
+
+  // Video data then audio data, in one mdat — the common layout.
+  const mdatBody = concat([...samplePayloads, ...audioPayloads]);
   const chunkCount = Math.ceil(frameCount / samplesPerChunk);
 
   // Chunk offsets are absolute file positions, so the moov must be built twice:
@@ -223,10 +247,67 @@ export function makeMp4(options: MakeMp4Options): MadeMp4 {
       "mvhd", 0, 0,
       u32(0), u32(0), u32(timescale), u32(frameCount * frameDuration),
       u32(0x00010000), u16(0x0100), u16(0), u32(0), u32(0),
-      UNITY_MATRIX, new Uint8Array(24), u32(2),
+      UNITY_MATRIX, new Uint8Array(24), u32(audioFrames > 0 ? 3 : 2),
     );
 
-    return box("moov", mvhd, trak);
+    if (audioFrames === 0) return box("moov", mvhd, trak);
+
+    // ---- audio track ----
+    // A `mp4a` entry with a small but well-formed `esds`, as AAC sources carry.
+    const esds = fullBox(
+      "esds", 0, 0,
+      new Uint8Array([
+        0x03, 0x19, 0x00, 0x01, 0x00,
+        0x04, 0x11, 0x40, 0x15, 0x00, 0x00, 0x00, 0x00, 0x01, 0xf4, 0x00, 0x00, 0x01, 0xf4, 0x00,
+        0x05, 0x02, 0x12, 0x10,
+        0x06, 0x01, 0x02,
+      ]),
+    );
+    const mp4a = box(
+      "mp4a",
+      new Uint8Array(6), u16(1),        // reserved, data_reference_index
+      new Uint8Array(8),                 // version/revision/vendor
+      u16(2),                            // channelcount
+      u16(16),                           // samplesize
+      u16(0), u16(0),                    // pre_defined, reserved
+      u32(audioSampleRate << 16),        // samplerate, 16.16 fixed
+      esds,
+    );
+
+    // Audio data sits immediately after the video data in the same mdat.
+    const audioDataStart = mdatDataStart + videoBytes;
+
+    const audioStbl = box(
+      "stbl",
+      fullBox("stsd", 0, 0, u32(1), mp4a),
+      fullBox("stts", 0, 0, u32(1), u32(audioFrames), u32(AAC_FRAME_SAMPLES)),
+      fullBox("stsc", 0, 0, u32(1), u32(1), u32(audioFrames), u32(1)),
+      fullBox("stsz", 0, 0, u32(0), u32(audioFrames), ...audioSizes.map(u32)),
+      fullBox("stco", 0, 0, u32(1), u32(audioDataStart)),
+      // No stss: every audio frame is a sync sample.
+    );
+
+    const audioMinf = box(
+      "minf",
+      fullBox("smhd", 0, 0, u16(0), u16(0)),
+      box("dinf", fullBox("dref", 0, 0, u32(1), fullBox("url ", 0, 1))),
+      audioStbl,
+    );
+    const audioMdia = box(
+      "mdia",
+      fullBox("mdhd", 0, 0, u32(0), u32(0), u32(audioSampleRate),
+        u32(audioFrames * AAC_FRAME_SAMPLES), u16(0x55c4), u16(0)),
+      fullBox("hdlr", 0, 0, u32(0), ascii("soun"), u32(0), u32(0), u32(0), ascii("SoundHandler\0")),
+      audioMinf,
+    );
+    const audioTkhd = fullBox(
+      "tkhd", 0, 7,
+      u32(0), u32(0), u32(2), u32(0), u32(audioFrames * AAC_FRAME_SAMPLES),
+      u32(0), u32(0), u16(0), u16(1), u16(0x0100), u16(0),
+      UNITY_MATRIX, u32(0), u32(0),
+    );
+
+    return box("moov", mvhd, trak, box("trak", audioTkhd, audioMdia));
   };
 
   const ftyp = box("ftyp", ascii("isom"), u32(512), ascii("isom"), ascii("mp41"));
@@ -250,7 +331,7 @@ export function makeMp4(options: MakeMp4Options): MadeMp4 {
   const mdat = box("mdat", mdatBody);
   const bytes = moovAtEnd ? concat([ftyp, mdat, moov]) : concat([ftyp, moov, mdat]);
 
-  return { bytes, samplePayloads, sampleSizes, syncFlags };
+  return { bytes, samplePayloads, sampleSizes, syncFlags, audioPayloads };
 }
 
 /** Convenience: the built file as a `Blob`, as a browser would supply it. */

@@ -39,15 +39,28 @@ export interface RemuxOptions {
    * Called as each segment completes, so the caller can persist progress and
    * be able to resume later. Receives everything {@link ResumeState} needs.
    */
-  onSegment?: (info: { index: number; duration: number; samplesProcessed: number }) => void;
+  onSegment?: (info: {
+    index: number;
+    duration: number;
+    samplesProcessed: number;
+    audioSamplesProcessed: number;
+  }) => void;
 }
 
 /** Where a previous run stopped. */
 export interface ResumeState {
   /** Durations of already-produced segments, in index order. */
   completedSegmentDurations: readonly number[];
-  /** How many source samples those segments consumed. */
+  /** How many video samples those segments consumed. */
   samplesProcessed: number;
+  /**
+   * How many audio frames those segments consumed.
+   *
+   * Recorded rather than derived from elapsed time: the two tracks have
+   * different frame rates, so any time-based estimate would drop or duplicate
+   * a frame at the resume point.
+   */
+  audioSamplesProcessed?: number;
 }
 
 /** What the source turned out to contain. */
@@ -58,6 +71,12 @@ export interface SourceInfo {
   sampleCount: number;
   /** Duration in seconds. */
   duration: number;
+  /** Whether the source carries an audio track that will be carried through. */
+  hasAudio: boolean;
+  /** Audio sample rate, or 0 when silent. */
+  audioTimescale: number;
+  /** Number of audio frames, or 0 when silent. */
+  audioSampleCount: number;
 }
 
 /** Inspect a source without packaging it — useful for validation and UI. */
@@ -72,6 +91,9 @@ export async function inspect(file: Blob): Promise<SourceInfo> {
       timescale: demuxer.timescale,
       sampleCount: demuxer.sampleCount,
       duration: demuxer.duration,
+      hasAudio: demuxer.hasAudio,
+      audioTimescale: demuxer.audioTimescale,
+      audioSampleCount: demuxer.audioSampleCount,
     };
   } finally {
     demuxer.free();
@@ -112,6 +134,12 @@ export async function* remux(file: Blob, options: RemuxOptions = {}): AsyncGener
       segmentDuration,
     );
 
+    // Audio must be declared before the init segment, since it changes the moov.
+    const hasAudio = demuxer.hasAudio;
+    if (hasAudio) {
+      segmenter.setAudio(demuxer.audioTimescale, demuxer.audioSampleEntry);
+    }
+
     // The init segment is identical on a resume, but re-emitting it is cheap
     // and makes a resumed run self-contained if the first upload never landed.
     yield {
@@ -122,6 +150,9 @@ export async function* remux(file: Blob, options: RemuxOptions = {}): AsyncGener
     };
 
     const allSamples = buildSampleList(demuxer);
+    const audioSamples = hasAudio ? buildAudioSampleList(demuxer) : [];
+    const videoTimescale = demuxer.timescale;
+    const audioTimescale = demuxer.audioTimescale;
     // The index is all we keep from the demuxer; release its WASM memory now
     // rather than holding it for the whole packaging run.
     demuxer.free();
@@ -137,10 +168,49 @@ export async function* remux(file: Blob, options: RemuxOptions = {}): AsyncGener
     }
     const samples = skipped > 0 ? allSamples.slice(skipped) : allSamples;
 
+    // Skip exactly the audio the earlier run consumed. The count is recorded at
+    // checkpoint time rather than inferred from elapsed time, because the two
+    // tracks advance at different rates and an estimate would drop or duplicate
+    // a frame right at the join.
+    const audioSkipped = Math.min(
+      Math.max(resume?.audioSamplesProcessed ?? 0, 0),
+      audioSamples.length,
+    );
+    const audioForRun = audioSkipped > 0 ? audioSamples.slice(audioSkipped) : audioSamples;
+
+    // Continue the audio timeline exactly where it stopped. Segment durations
+    // cannot imply this — a 1s segment does not hold a whole number of audio
+    // frames — so the tick count is carried across explicitly.
+    const audioTicksSkipped = audioSamples
+      .slice(0, audioSkipped)
+      .reduce((t, s) => t + s.duration, 0);
+    if (hasAudio && audioTicksSkipped > 0) {
+      segmenter.restoreAudioTime(audioTicksSkipped);
+    }
+
     let processed = skipped;
+    let audioProcessed = audioSkipped;
     const total = allSamples.length;
 
-    for await (const { sample, data } of readSamples(file, samples, { readWindow, signal })) {
+    const stream = hasAudio
+      ? mergeTracks(file, samples, videoTimescale, audioForRun, audioTimescale, {
+          readWindow,
+          signal,
+          startVideoTime:
+            allSamples.slice(0, skipped).reduce((t, s) => t + s.duration, 0) / videoTimescale,
+          startAudioTime:
+            audioSamples.slice(0, audioSkipped).reduce((t, s) => t + s.duration, 0) /
+            audioTimescale,
+        })
+      : videoOnly(file, samples, { readWindow, signal });
+
+    for await (const { track, sample, data } of stream) {
+      if (track === "audio") {
+        segmenter.pushAudioSample(data, sample.duration);
+        audioProcessed++;
+        continue;
+      }
+
       segmenter.pushSample(data, sample.duration, sample.isSync, sample.compositionOffset);
 
       // Drain eagerly so finished segments are handed over (and freed) as soon
@@ -150,7 +220,7 @@ export async function* remux(file: Blob, options: RemuxOptions = {}): AsyncGener
       // closed by the keyframe that starts the *next* one, so the segment just
       // finished contains only the samples before the current sample. Reporting
       // the post-increment count would make a resume skip that keyframe.
-      yield* drain(segmenter, processed, onSegment);
+      yield* drain(segmenter, processed, audioProcessed, onSegment);
 
       processed++;
       if (onProgress && processed % 100 === 0) {
@@ -159,7 +229,7 @@ export async function* remux(file: Blob, options: RemuxOptions = {}): AsyncGener
     }
 
     segmenter.finish();
-    yield* drain(segmenter, processed, onSegment);
+    yield* drain(segmenter, processed, audioProcessed, onSegment);
 
     onProgress?.({ processed, total, fraction: 1 });
 
@@ -181,6 +251,7 @@ export async function* remux(file: Blob, options: RemuxOptions = {}): AsyncGener
 function* drain(
   segmenter: Fmp4Segmenter,
   samplesProcessed: number,
+  audioSamplesProcessed: number,
   onSegment: RemuxOptions["onSegment"],
 ): Generator<OutputFile> {
   for (;;) {
@@ -200,7 +271,7 @@ function* drain(
     }
     // Reported after the yield so a caller persisting progress only records a
     // segment the consumer has actually received.
-    onSegment?.({ index, duration, samplesProcessed });
+    onSegment?.({ index, duration, samplesProcessed, audioSamplesProcessed });
   }
 }
 
@@ -229,6 +300,97 @@ function buildSampleList(demuxer: Mp4Demuxer): SampleLocation[] {
     };
   }
   return out;
+}
+
+/** The audio track's sample locations, in decode order. */
+function buildAudioSampleList(demuxer: Mp4Demuxer): SampleLocation[] {
+  const offsets = demuxer.audioSampleOffsets();
+  const sizes = demuxer.audioSampleSizes();
+  const durations = demuxer.audioSampleDurations();
+
+  const out: SampleLocation[] = new Array(offsets.length);
+  for (let i = 0; i < offsets.length; i++) {
+    out[i] = {
+      offset: offsets[i]!,
+      size: sizes[i]!,
+      duration: durations[i]!,
+      // Every audio frame is independently decodable.
+      isSync: true,
+      compositionOffset: 0,
+    };
+  }
+  return out;
+}
+
+/** Adapt a single-track read into the merged shape, for silent sources. */
+async function* videoOnly(
+  file: Blob,
+  samples: readonly SampleLocation[],
+  options: { readWindow?: number | undefined; signal?: AbortSignal | undefined },
+): AsyncGenerator<MergedSample> {
+  for await (const { sample, data } of readSamples(file, samples, options)) {
+    yield { track: "video", sample, data };
+  }
+}
+
+/** One sample from either track, tagged with its track and time. */
+interface MergedSample {
+  track: "video" | "audio";
+  sample: SampleLocation;
+  data: Uint8Array;
+}
+
+/**
+ * Interleave two tracks by decode time, without giving up sequential reads.
+ *
+ * A naive merge would alternate between distant file offsets and defeat the
+ * read coalescing in `readSamples`. Instead each track is read by its own
+ * sequential iterator and only the *emission order* is interleaved, so both
+ * tracks stream forwards while audio still reaches the segmenter before the
+ * video segment it belongs to closes.
+ */
+async function* mergeTracks(
+  file: Blob,
+  video: readonly SampleLocation[],
+  videoTimescale: number,
+  audio: readonly SampleLocation[],
+  audioTimescale: number,
+  options: {
+    readWindow?: number | undefined;
+    signal?: AbortSignal | undefined;
+    /** Elapsed time already consumed, so a resumed run keeps the same phase. */
+    startVideoTime?: number;
+    startAudioTime?: number;
+  },
+): AsyncGenerator<MergedSample> {
+  const videoIter = readSamples(file, video, options)[Symbol.asyncIterator]();
+  const audioIter = readSamples(file, audio, options)[Symbol.asyncIterator]();
+
+  let videoNext = await videoIter.next();
+  let audioNext = await audioIter.next();
+  // Seeded rather than zeroed: interleaving depends on the *relative* position
+  // of the two clocks, so a resume that restarted them at zero would order the
+  // first few samples differently and shift a frame between segments.
+  let videoTime = options.startVideoTime ?? 0;
+  let audioTime = options.startAudioTime ?? 0;
+
+  while (!videoNext.done || !audioNext.done) {
+    // Emit whichever track is further behind, so neither runs ahead of the
+    // other by more than one sample.
+    const takeAudio = !audioNext.done && (videoNext.done || audioTime <= videoTime);
+
+    if (takeAudio && !audioNext.done) {
+      const { sample, data } = audioNext.value;
+      yield { track: "audio", sample, data };
+      audioTime += sample.duration / audioTimescale;
+      audioNext = await audioIter.next();
+    } else if (!videoNext.done) {
+      const { sample, data } = videoNext.value;
+      yield { track: "video", sample, data };
+      videoTime += sample.duration / videoTimescale;
+      videoNext = await videoIter.next();
+    }
+  }
 }
 
 /** Free a WASM object that may already have been freed. */

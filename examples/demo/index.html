@@ -126,6 +126,21 @@
         <div class="out" id="framesOut"></div>
       </section>
 
+      <!-- 3b. audio -->
+      <section>
+        <h2>Audio <span class="tag">muxed second track</span></h2>
+        <p class="hint">
+          A source with sound must come out with sound. Audio frames are copied
+          untouched and muxed as a second track in the same segments, with the two
+          timelines kept in step.
+        </p>
+        <div class="row">
+          <button id="audioRun">Package a source with audio</button>
+          <input type="file" id="audioFile" accept="video/mp4,video/quicktime" />
+        </div>
+        <div class="out" id="audioOut"></div>
+      </section>
+
       <!-- 4. transcode / ABR -->
       <section>
         <h2>Transcode to an ABR ladder <span class="tag">mode: transcode</span></h2>

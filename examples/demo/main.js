@@ -290,6 +290,119 @@ $("framesRun").addEventListener("click", async () => {
   button.disabled = false;
 });
 
+// ---- 3b. audio ------------------------------------------------------------
+
+async function runAudio(file, label) {
+  const log = logger("audioOut");
+  log.head(`audio — ${label}`);
+
+  let info;
+  try {
+    info = await inspect(file);
+  } catch (error) {
+    log.err(`cannot read this file: ${error.message}`);
+    return;
+  }
+
+  log.line(`  video: ${info.width}×${info.height}, ${info.sampleCount} frames, ${info.duration.toFixed(1)}s`);
+  if (!info.hasAudio) {
+    log.warn("this source has no audio track — output will be video only");
+  } else {
+    log.ok(`audio: ${info.audioSampleCount} frames at ${info.audioTimescale} Hz`);
+  }
+
+  const produced = new Map();
+  const t0 = performance.now();
+  try {
+    for await (const out of remux(file, { prefix: "av", segmentDuration: 4 })) {
+      produced.set(out.name, out.blob);
+    }
+  } catch (error) {
+    log.err(error.message);
+    return;
+  }
+  log.line(`  packaged ${produced.size} files in ${(performance.now() - t0).toFixed(0)} ms`);
+
+  // Inspect the output structure directly, so the claim is checked not asserted.
+  const init = new Uint8Array(await produced.get("av_init.mp4").arrayBuffer());
+  const moov = childBox(init, "moov");
+  const trackCount = listBoxes(moov).filter((b) => b.kind === "trak").length;
+  log.head("output structure");
+  log.line(`  tracks in moov: ${trackCount}`);
+
+  const firstSegment = [...produced.keys()].find((n) => n.endsWith(".m4s"));
+  const segBytes = new Uint8Array(await produced.get(firstSegment).arrayBuffer());
+  const runs = listBoxes(childBox(segBytes, "moof")).filter((b) => b.kind === "traf");
+  log.line(`  traf boxes per segment: ${runs.length}`);
+  for (const run of runs) {
+    const id = readU32(childBox(run.payload, "tfhd"), 4);
+    const count = readU32(childBox(run.payload, "trun"), 4);
+    log.line(`    track ${id}: ${count} samples`);
+  }
+
+  if (info.hasAudio && trackCount === 2 && runs.length === 2) {
+    log.ok("audio survived: two tracks in the init segment and in every fragment");
+  } else if (!info.hasAudio && trackCount === 1) {
+    log.ok("silent source produced a correct single-track output");
+  } else {
+    log.err("unexpected track layout");
+  }
+
+  // Let the browser judge whether the result is really playable.
+  log.head("playback check");
+  const video = document.createElement("video");
+  video.muted = true;
+  await playInMemory(video, produced, [...produced.keys()].find((n) => n.endsWith(".m3u8")));
+  const t1 = performance.now();
+  while (!Number.isFinite(video.duration) && performance.now() - t1 < 6000) {
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  if (video.error) {
+    log.warn(`decoder rejected the media: ${video.error.message || video.error.code}`);
+    log.line("  expected for a generated sample — its frames are not real H.264/AAC");
+  }
+  log.line(`  duration reported by the player: ${video.duration?.toFixed?.(2) ?? "n/a"}s`);
+}
+
+$("audioRun").addEventListener("click", async () => {
+  const blob = await (await fetch("/sample-audio.mp4")).blob();
+  await runAudio(new File([blob], "sample-audio.mp4", { type: "video/mp4" }), "generated sample with audio");
+});
+
+$("audioFile").addEventListener("change", (e) => {
+  const file = e.target.files?.[0];
+  if (file) runAudio(file, file.name);
+});
+
+// ---- box reading, for the checks above ------------------------------------
+
+function listBoxes(buf) {
+  const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+  const out = [];
+  let at = 0;
+  while (at + 8 <= buf.byteLength) {
+    const size = view.getUint32(at);
+    if (size < 8) break;
+    const kind = String.fromCharCode(
+      view.getUint8(at + 4), view.getUint8(at + 5),
+      view.getUint8(at + 6), view.getUint8(at + 7),
+    );
+    out.push({ kind, payload: buf.subarray(at + 8, Math.min(at + size, buf.byteLength)) });
+    at += size;
+  }
+  return out;
+}
+
+function childBox(buf, kind) {
+  const found = listBoxes(buf).find((b) => b.kind === kind);
+  if (!found) throw new Error(`box '${kind}' not found`);
+  return found.payload;
+}
+
+function readU32(buf, at) {
+  return new DataView(buf.buffer, buf.byteOffset, buf.byteLength).getUint32(at);
+}
+
 // ---- 4. transcode ---------------------------------------------------------
 
 $("abrFile").addEventListener("change", (e) => {

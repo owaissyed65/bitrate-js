@@ -3,9 +3,14 @@
 //! Each segment is independently decodable (it starts at a keyframe), which is
 //! what lets a player seek by jumping straight to one segment instead of
 //! downloading everything before it.
+//!
+//! When the source has audio, a segment carries both tracks: two `traf` boxes
+//! describing them, and a single `mdat` holding video samples followed by audio
+//! samples. Keeping both in one segment means one request per time range and
+//! keeps audio and video in lockstep.
 
 use super::boxes::BoxWriter;
-use super::init::TRACK_ID;
+use super::init::{AUDIO_TRACK_ID, TRACK_ID};
 use super::Sample;
 
 /// `tfhd` flag: sample offsets are relative to the start of this `moof`.
@@ -26,30 +31,56 @@ const FLAG_SYNC: u32 = 0x0200_0000;
 /// access point.
 const FLAG_NON_SYNC: u32 = 0x0101_0000;
 
-/// Build one media segment from `samples`.
+/// One track's contribution to a segment.
+pub(super) struct TrackRun<'a> {
+    pub track_id: u32,
+    /// Decode time of this run's first sample, in that track's timescale.
+    pub base_decode_time: u64,
+    pub samples: &'a [Sample],
+}
+
+/// Build one media segment from the given track runs.
 ///
 /// * `sequence_number` — 1-based fragment counter (`mfhd`).
-/// * `base_decode_time` — decode time of the first sample, in track timescale
-///   units (`tfdt`). This is what keeps segments correctly positioned on the
-///   timeline so seeking lands where the player expects.
-pub(super) fn build(sequence_number: u32, base_decode_time: u64, samples: &[Sample]) -> Vec<u8> {
-    let media_len: usize = samples.iter().map(|s| s.data.len()).sum();
-    let mut w = BoxWriter::with_capacity(media_len + 256 + samples.len() * 16);
+/// * `video` — always present; its keyframe defines the segment boundary.
+/// * `audio` — the audio covering the same time range, when the source has any.
+pub(super) fn build(
+    sequence_number: u32,
+    video: TrackRun<'_>,
+    audio: Option<TrackRun<'_>>,
+) -> Vec<u8> {
+    let media_len: usize = video.samples.iter().map(|s| s.data.len()).sum::<usize>()
+        + audio.as_ref().map_or(0, |a| a.samples.iter().map(|s| s.data.len()).sum());
+    let sample_count = video.samples.len() + audio.as_ref().map_or(0, |a| a.samples.len());
+
+    let mut w = BoxWriter::with_capacity(media_len + 512 + sample_count * 16);
 
     styp(&mut w);
 
-    // `trun`'s data_offset is measured from the start of the moof, but is not
-    // known until the moof is complete — so record where to patch it.
+    // Each `trun`'s data_offset is measured from the start of the moof but is
+    // not known until the moof is complete, so record where to patch them.
     let moof_start = w.len();
-    let data_offset_pos = moof(&mut w, sequence_number, base_decode_time, samples);
+    let offsets = moof(&mut w, sequence_number, &video, audio.as_ref());
     let moof_len = w.len() - moof_start;
 
-    // Sample data begins after the moof and the 8-byte mdat header.
-    let data_offset = u32::try_from(moof_len + 8).unwrap_or(u32::MAX);
-    w.patch_u32_at(data_offset_pos, data_offset);
+    // Video data begins after the moof and the 8-byte mdat header; audio
+    // follows the video bytes.
+    let video_bytes: usize = video.samples.iter().map(|s| s.data.len()).sum();
+    let video_offset = u32::try_from(moof_len + 8).unwrap_or(u32::MAX);
+    w.patch_u32_at(offsets.video, video_offset);
+    if let Some(audio_offset_pos) = offsets.audio {
+        let audio_offset = u32::try_from(moof_len + 8 + video_bytes).unwrap_or(u32::MAX);
+        w.patch_u32_at(audio_offset_pos, audio_offset);
+    }
 
-    mdat(&mut w, samples);
+    mdat(&mut w, &video, audio.as_ref());
     w.into_bytes()
+}
+
+/// Where each track's `data_offset` field sits, for back-patching.
+struct DataOffsets {
+    video: usize,
+    audio: Option<usize>,
 }
 
 /// Segment type box. `msdh` marks a media segment; including it makes the
@@ -61,36 +92,50 @@ fn styp(w: &mut BoxWriter) {
     });
 }
 
-/// Write the `moof`, returning the buffer offset of `trun`'s `data_offset`
-/// field so the caller can patch it once the moof size is known.
-fn moof(w: &mut BoxWriter, sequence_number: u32, base_decode_time: u64, samples: &[Sample]) -> usize {
+/// Write the `moof`, returning where each track's `data_offset` must be patched.
+fn moof(
+    w: &mut BoxWriter,
+    sequence_number: u32,
+    video: &TrackRun<'_>,
+    audio: Option<&TrackRun<'_>>,
+) -> DataOffsets {
     let open = w.begin(b"moof");
 
     w.full_boxed(b"mfhd", 0, 0, |w| {
         w.u32(sequence_number);
     });
 
-    let traf = w.begin(b"traf");
+    let video_offset = traf(w, video);
+    let audio_offset = audio.map(|a| traf(w, a));
+
+    w.end(open);
+    DataOffsets {
+        video: video_offset,
+        audio: audio_offset,
+    }
+}
+
+/// Write one track fragment, returning the offset of its `data_offset` field.
+fn traf(w: &mut BoxWriter, run: &TrackRun<'_>) -> usize {
+    let open = w.begin(b"traf");
 
     w.full_boxed(b"tfhd", 0, TFHD_DEFAULT_BASE_IS_MOOF, |w| {
-        w.u32(TRACK_ID);
+        w.u32(run.track_id);
     });
 
     // Version 1 carries a 64-bit decode time, so long videos cannot overflow.
     w.full_boxed(b"tfdt", 1, 0, |w| {
-        w.u64(base_decode_time);
+        w.u64(run.base_decode_time);
     });
 
-    let data_offset_pos = trun(w, samples);
+    let data_offset_pos = trun(w, run.samples);
 
-    w.end(traf);
     w.end(open);
     data_offset_pos
 }
 
-/// Track fragment run — describes every sample in this segment.
-///
-/// Returns the offset of the `data_offset` field for later patching.
+/// Track fragment run — describes every sample in this track's part of the
+/// segment. Returns the offset of the `data_offset` field for later patching.
 fn trun(w: &mut BoxWriter, samples: &[Sample]) -> usize {
     let flags = TRUN_DATA_OFFSET
         | TRUN_SAMPLE_DURATION
@@ -117,11 +162,21 @@ fn trun(w: &mut BoxWriter, samples: &[Sample]) -> usize {
     data_offset_pos
 }
 
-/// Media data box — the raw encoded samples, concatenated in decode order.
-fn mdat(w: &mut BoxWriter, samples: &[Sample]) {
+/// Media data box — video samples then audio samples, each in decode order.
+/// The order here must match the `data_offset` arithmetic above.
+fn mdat(w: &mut BoxWriter, video: &TrackRun<'_>, audio: Option<&TrackRun<'_>>) {
     w.boxed(b"mdat", |w| {
-        for s in samples {
+        for s in video.samples {
             w.bytes(&s.data);
+        }
+        if let Some(audio) = audio {
+            for s in audio.samples {
+                w.bytes(&s.data);
+            }
         }
     });
 }
+
+/// Track ids, re-exported so the segmenter can build runs.
+pub(super) const VIDEO_TRACK: u32 = TRACK_ID;
+pub(super) const AUDIO_TRACK: u32 = AUDIO_TRACK_ID;

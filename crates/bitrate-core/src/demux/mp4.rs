@@ -70,45 +70,67 @@ pub struct VideoTrack {
     pub samples: Vec<SampleRef>,
 }
 
-/// Parse a `moov` payload and return its first usable H.264 video track.
-pub fn parse_moov(moov: &[u8]) -> Result<VideoTrack, DemuxError> {
+/// A parsed audio track.
+///
+/// The codec's sample entry (`mp4a` and its `esds`, or whatever the source
+/// used) is carried through verbatim rather than re-derived. Copying it exactly
+/// preserves sample rate, channel layout and decoder configuration, which is
+/// both simpler and safer than rebuilding a descriptor we would have to get
+/// bit-perfect.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AudioTrack {
+    /// Track timescale — usually the sample rate.
+    pub timescale: u32,
+    /// The complete sample entry box, header included, ready to re-embed.
+    pub sample_entry: Vec<u8>,
+    /// Every audio frame, in decode order.
+    pub samples: Vec<SampleRef>,
+}
+
+/// A parsed source: one video track and, when present, one audio track.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Movie {
+    /// The H.264 video track. Required — a source without one is rejected.
+    pub video: VideoTrack,
+    /// `None` for a silent source — packaging then produces video only.
+    pub audio: Option<AudioTrack>,
+}
+
+/// Parse a `moov` payload into its video track and optional audio track.
+pub fn parse_moov(moov: &[u8]) -> Result<Movie, DemuxError> {
+    let mut video: Option<VideoTrack> = None;
+    let mut audio: Option<AudioTrack> = None;
+
     for b in boxes(moov) {
         if !b.is(b"trak") {
             continue;
         }
-        match parse_trak(b.payload) {
-            Ok(track) => return Ok(track),
-            // Skip audio/subtitle/unsupported tracks and keep looking.
-            Err(DemuxError::NoVideoTrack) => continue,
-            Err(e) => return Err(e),
+        match handler_of(b.payload) {
+            Some(kind) if &kind == b"vide" && video.is_none() => {
+                video = Some(parse_video_trak(b.payload)?);
+            }
+            // A source may carry several audio tracks (commentary, languages);
+            // the first is the main one for our purposes.
+            Some(kind) if &kind == b"soun" && audio.is_none() => {
+                // A malformed audio track should not sink an otherwise fine
+                // video: drop it and package silent output instead.
+                audio = parse_audio_trak(b.payload).ok();
+            }
+            _ => {}
         }
     }
-    Err(DemuxError::NoVideoTrack)
+
+    match video {
+        Some(video) => Ok(Movie { video, audio }),
+        None => Err(DemuxError::NoVideoTrack),
+    }
 }
 
-fn parse_trak(trak: &[u8]) -> Result<VideoTrack, DemuxError> {
+fn parse_video_trak(trak: &[u8]) -> Result<VideoTrack, DemuxError> {
     let mdia = find(trak, b"mdia").ok_or(DemuxError::MalformedBox("mdia"))?;
-
-    if !is_video_handler(mdia) {
-        return Err(DemuxError::NoVideoTrack);
-    }
-
-    let timescale = parse_mdhd(find(mdia, b"mdhd").ok_or(DemuxError::MalformedBox("mdhd"))?)?;
-    if timescale == 0 {
-        return Err(DemuxError::MalformedBox("mdhd"));
-    }
-
-    let stbl = find_path(mdia, &[b"minf", b"stbl"]).ok_or(DemuxError::MalformedBox("stbl"))?;
+    let (timescale, stbl) = track_basics(mdia)?;
     let visual = parse_stsd(find(stbl, b"stsd").ok_or(DemuxError::MalformedBox("stsd"))?)?;
-
-    let sizes = parse_stsz(find(stbl, b"stsz").ok_or(DemuxError::MalformedBox("stsz"))?)?;
-    let durations = parse_stts(find(stbl, b"stts").ok_or(DemuxError::MalformedBox("stts"))?)?;
-    let chunk_offsets = parse_chunk_offsets(stbl)?;
-    let stsc = parse_stsc(find(stbl, b"stsc").ok_or(DemuxError::MalformedBox("stsc"))?)?;
-    let sync = find(stbl, b"stss").map(parse_stss).transpose()?;
-    let cts = find(stbl, b"ctts").map(parse_ctts).transpose()?;
-
-    let samples = build_index(&sizes, &durations, &chunk_offsets, &stsc, sync.as_deref(), cts.as_deref())?;
+    let samples = sample_index(stbl)?;
 
     Ok(VideoTrack {
         timescale,
@@ -119,15 +141,50 @@ fn parse_trak(trak: &[u8]) -> Result<VideoTrack, DemuxError> {
     })
 }
 
-fn is_video_handler(mdia: &[u8]) -> bool {
-    let Some(hdlr) = find(mdia, b"hdlr") else {
-        return false;
-    };
-    let mut r = Reader::new(hdlr);
-    if r.version_flags().is_none() || r.u32().is_none() {
-        return false;
+fn parse_audio_trak(trak: &[u8]) -> Result<AudioTrack, DemuxError> {
+    let mdia = find(trak, b"mdia").ok_or(DemuxError::MalformedBox("mdia"))?;
+    let (timescale, stbl) = track_basics(mdia)?;
+    let sample_entry =
+        parse_audio_stsd(find(stbl, b"stsd").ok_or(DemuxError::MalformedBox("stsd"))?)?;
+    let samples = sample_index(stbl)?;
+
+    Ok(AudioTrack {
+        timescale,
+        sample_entry,
+        samples,
+    })
+}
+
+/// Timescale and sample table, common to every track type.
+fn track_basics(mdia: &[u8]) -> Result<(u32, &[u8]), DemuxError> {
+    let timescale = parse_mdhd(find(mdia, b"mdhd").ok_or(DemuxError::MalformedBox("mdhd"))?)?;
+    if timescale == 0 {
+        return Err(DemuxError::MalformedBox("mdhd"));
     }
-    r.fourcc().map(|k| &k == b"vide").unwrap_or(false)
+    let stbl = find_path(mdia, &[b"minf", b"stbl"]).ok_or(DemuxError::MalformedBox("stbl"))?;
+    Ok((timescale, stbl))
+}
+
+/// Build the per-sample index from a track's sample table.
+fn sample_index(stbl: &[u8]) -> Result<Vec<SampleRef>, DemuxError> {
+    let sizes = parse_stsz(find(stbl, b"stsz").ok_or(DemuxError::MalformedBox("stsz"))?)?;
+    let durations = parse_stts(find(stbl, b"stts").ok_or(DemuxError::MalformedBox("stts"))?)?;
+    let chunk_offsets = parse_chunk_offsets(stbl)?;
+    let stsc = parse_stsc(find(stbl, b"stsc").ok_or(DemuxError::MalformedBox("stsc"))?)?;
+    let sync = find(stbl, b"stss").map(parse_stss).transpose()?;
+    let cts = find(stbl, b"ctts").map(parse_ctts).transpose()?;
+
+    build_index(&sizes, &durations, &chunk_offsets, &stsc, sync.as_deref(), cts.as_deref())
+}
+
+/// The handler type of a track (`vide`, `soun`, …), if it declares one.
+fn handler_of(trak: &[u8]) -> Option<[u8; 4]> {
+    let mdia = find(trak, b"mdia")?;
+    let hdlr = find(mdia, b"hdlr")?;
+    let mut r = Reader::new(hdlr);
+    r.version_flags()?;
+    r.u32()?; // pre_defined
+    r.fourcc()
 }
 
 fn parse_mdhd(mdhd: &[u8]) -> Result<u32, DemuxError> {
@@ -174,6 +231,40 @@ fn parse_stsd(stsd: &[u8]) -> Result<VisualEntry, DemuxError> {
         });
     }
     Err(DemuxError::NoVideoTrack)
+}
+
+/// Largest audio sample entry we will copy, to bound memory on hostile input.
+const MAX_SAMPLE_ENTRY: usize = 64 * 1024;
+
+/// Extract an audio track's sample entry as a complete, re-embeddable box.
+///
+/// The entry is copied byte-for-byte — including `esds`, sample rate and
+/// channel count — rather than parsed and rebuilt. Reconstructing an
+/// `ES_Descriptor` correctly is fiddly and offers nothing here: for remuxing,
+/// an exact copy is both simpler and more faithful.
+fn parse_audio_stsd(stsd: &[u8]) -> Result<Vec<u8>, DemuxError> {
+    let mut r = Reader::new(stsd);
+    r.version_flags().ok_or(DemuxError::MalformedBox("stsd"))?;
+    r.u32().ok_or(DemuxError::MalformedBox("stsd"))?; // entry_count
+
+    // The first entry is the one the sample table's description index points at.
+    let entry = boxes(r.rest())
+        .into_iter()
+        .next()
+        .ok_or(DemuxError::MalformedBox("stsd"))?;
+
+    if entry.payload.len() > MAX_SAMPLE_ENTRY {
+        return Err(DemuxError::MalformedBox("stsd"));
+    }
+
+    // Rebuild the box header: `boxes()` hands back payloads only.
+    let size = u32::try_from(entry.payload.len().saturating_add(8))
+        .map_err(|_| DemuxError::MalformedBox("stsd"))?;
+    let mut out = Vec::with_capacity(size as usize);
+    out.extend_from_slice(&size.to_be_bytes());
+    out.extend_from_slice(&entry.kind);
+    out.extend_from_slice(entry.payload);
+    Ok(out)
 }
 
 /// Sample sizes. A non-zero `sample_size` means every sample is that size.

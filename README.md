@@ -25,6 +25,8 @@ user picks files ─▶ QUEUE ─▶ chunk / encode ABR ladder ─▶ HLS ─▶
 - **Adaptive bitrate** — multiple quality rungs so players adapt to network speed.
 - **Multi-file queue** with progress, retries, and skip-and-continue on failure.
 - **Resumes after a closed tab** via IndexedDB — no redoing a 40-minute job.
+- **Keeps the audio** — the source audio track is carried through untouched and muxed
+  alongside the video, with both timelines kept in step.
 - **Uploads anywhere** through a pluggable adapter.
 - **Flat memory** — reads the source through `Blob.slice` and releases each output file as
   it is produced, so peak memory does not grow with file size.

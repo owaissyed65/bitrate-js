@@ -317,8 +317,8 @@ genuinely useful product), then add transcoding in M5–M6.
 | **No hardware encoder** → hours-long job | Detect up front, warn or refuse; steer such users to `remux` mode. |
 | **Storage quota** exhausted mid-job | `navigator.storage.estimate()` before starting; `persist()` to avoid eviction; auto-cleanup after upload. |
 | **Browser support** (WebCodecs) | Chrome/Edge solid; Safari 16.4+/Firefox recent OK. `isSupported()` + documented matrix. No legacy fallback in v1. |
-| **Audio + A/V sync** | Handle audio via `AudioDecoder`/`AudioEncoder` (AAC) as its own track in fMP4; keep timescales/DTS aligned. Remux mode (M2) carries audio through untouched. |
-| **Resume can't re-read the file** (browser security) | `FileSystemFileHandle` in IndexedDB (Chrome/Edge) or re-pick + `name/size/lastModified` verification (Safari/Firefox). Encoding progress is preserved either way. |
+| **Audio + A/V sync** | Done for remux: the source sample entry (with its `esds`) is copied verbatim, audio is muxed as track 2 in the same segments, and each track keeps its own `tfdt` timeline. Resume carries the exact audio frame count, since a time-based estimate would drop or duplicate a frame. |
+| **Resume cannot re-read the file** (browser security) | `FileSystemFileHandle` in IndexedDB (Chrome/Edge) or re-pick + `name/size/lastModified` verification (Safari/Firefox). Progress is preserved either way. |
 | **Codec/manifest conformance** | Validate against `hls.js` + native Safari early; use fMP4 (CMAF) over TS for cleaner muxing. |
 | **Scope creep** | v1 = H.264 + fMP4 + video/audio. VP9/AV1/TS/DRM are follow-ups. |
 

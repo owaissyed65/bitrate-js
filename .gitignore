@@ -14,3 +14,4 @@ fuzz/artifacts
 fuzz/corpus
 js/src/wasm-inline.ts
 examples/demo/public/sample.mp4
+examples/demo/public/sample-audio.mp4

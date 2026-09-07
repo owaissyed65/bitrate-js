@@ -6,16 +6,17 @@
 //! every sample is described later, per fragment, in `trun`.
 
 use super::boxes::BoxWriter;
-use super::TrackConfig;
+use super::{AudioTrackConfig, TrackConfig};
 
-/// The single track id we emit. One track per rendition keeps `trun` simple.
+/// Track ids. Video is 1, audio is 2 when present.
 pub(super) const TRACK_ID: u32 = 1;
+pub(super) const AUDIO_TRACK_ID: u32 = 2;
 
-/// Build the initialization segment for `cfg`.
-pub(super) fn build(cfg: &TrackConfig) -> Vec<u8> {
-    let mut w = BoxWriter::with_capacity(1024);
+/// Build the initialization segment for `cfg`, optionally with an audio track.
+pub(super) fn build(cfg: &TrackConfig, audio: Option<&AudioTrackConfig>) -> Vec<u8> {
+    let mut w = BoxWriter::with_capacity(1536);
     ftyp(&mut w);
-    moov(&mut w, cfg);
+    moov(&mut w, cfg, audio);
     w.into_bytes()
 }
 
@@ -28,17 +29,21 @@ fn ftyp(w: &mut BoxWriter) {
     });
 }
 
-fn moov(w: &mut BoxWriter, cfg: &TrackConfig) {
+fn moov(w: &mut BoxWriter, cfg: &TrackConfig, audio: Option<&AudioTrackConfig>) {
     w.boxed(b"moov", |w| {
-        mvhd(w, cfg);
+        mvhd(w, cfg, audio.is_some());
         trak(w, cfg);
-        mvex(w);
+        if let Some(audio) = audio {
+            audio_trak(w, audio);
+        }
+        mvex(w, audio.is_some());
     });
 }
 
 /// Movie header. `duration` is 0 because a fragmented file's length is not
 /// known up front.
-fn mvhd(w: &mut BoxWriter, cfg: &TrackConfig) {
+fn mvhd(w: &mut BoxWriter, cfg: &TrackConfig, has_audio: bool) {
+    let next_track_id = if has_audio { AUDIO_TRACK_ID + 1 } else { TRACK_ID + 1 };
     w.full_boxed(b"mvhd", 0, 0, |w| {
         w.u32(0) // creation_time
             .u32(0) // modification_time
@@ -51,7 +56,7 @@ fn mvhd(w: &mut BoxWriter, cfg: &TrackConfig) {
             .u32(0) // reserved
             .unity_matrix()
             .zeros(24) // pre_defined[6]
-            .u32(TRACK_ID + 1); // next_track_ID
+            .u32(next_track_id);
     });
 }
 
@@ -187,15 +192,111 @@ fn avc1(w: &mut BoxWriter, cfg: &TrackConfig) {
 }
 
 /// Movie extends — required for fragmented MP4; its presence tells a player
-/// that fragments follow.
-fn mvex(w: &mut BoxWriter) {
+/// that fragments follow. One `trex` per track.
+fn mvex(w: &mut BoxWriter, has_audio: bool) {
     w.boxed(b"mvex", |w| {
-        w.full_boxed(b"trex", 0, 0, |w| {
-            w.u32(TRACK_ID)
-                .u32(1) // default_sample_description_index
-                .u32(0) // default_sample_duration
-                .u32(0) // default_sample_size
-                .u32(0); // default_sample_flags
+        trex(w, TRACK_ID);
+        if has_audio {
+            trex(w, AUDIO_TRACK_ID);
+        }
+    });
+}
+
+fn trex(w: &mut BoxWriter, track_id: u32) {
+    w.full_boxed(b"trex", 0, 0, |w| {
+        w.u32(track_id)
+            .u32(1) // default_sample_description_index
+            .u32(0) // default_sample_duration
+            .u32(0) // default_sample_size
+            .u32(0); // default_sample_flags
+    });
+}
+
+// ---- audio track ----------------------------------------------------------
+
+/// Build the audio `trak`.
+///
+/// The codec sample entry is embedded verbatim from the source, so sample rate,
+/// channel layout and decoder configuration are preserved exactly.
+fn audio_trak(w: &mut BoxWriter, cfg: &AudioTrackConfig) {
+    w.boxed(b"trak", |w| {
+        audio_tkhd(w);
+        w.boxed(b"mdia", |w| {
+            audio_mdhd(w, cfg);
+            audio_hdlr(w);
+            w.boxed(b"minf", |w| {
+                // Sound media header; balance 0 = centred.
+                w.full_boxed(b"smhd", 0, 0, |w| {
+                    w.i16(0).u16(0);
+                });
+                dinf(w);
+                audio_stbl(w, cfg);
+            });
+        });
+    });
+}
+
+/// Audio `tkhd`: volume is full, and the display matrix/size are irrelevant.
+fn audio_tkhd(w: &mut BoxWriter) {
+    w.full_boxed(b"tkhd", 0, 0x7, |w| {
+        w.u32(0)
+            .u32(0)
+            .u32(AUDIO_TRACK_ID)
+            .u32(0) // reserved
+            .u32(0) // duration
+            .u32(0)
+            .u32(0) // reserved
+            .i16(0) // layer
+            .i16(1) // alternate_group — audio tracks are alternatives of each other
+            .i16(0x0100) // volume 1.0
+            .u16(0) // reserved
+            .unity_matrix()
+            .u32(0) // width
+            .u32(0); // height
+    });
+}
+
+fn audio_mdhd(w: &mut BoxWriter, cfg: &AudioTrackConfig) {
+    w.full_boxed(b"mdhd", 0, 0, |w| {
+        w.u32(0)
+            .u32(0)
+            .u32(cfg.timescale)
+            .u32(0) // duration
+            .u16(0x55c4) // 'und'
+            .u16(0);
+    });
+}
+
+fn audio_hdlr(w: &mut BoxWriter) {
+    w.full_boxed(b"hdlr", 0, 0, |w| {
+        w.u32(0)
+            .bytes(b"soun")
+            .u32(0)
+            .u32(0)
+            .u32(0)
+            .bytes(b"SoundHandler\0");
+    });
+}
+
+/// Audio sample table — empty like the video one, save for `stsd`.
+fn audio_stbl(w: &mut BoxWriter, cfg: &AudioTrackConfig) {
+    w.boxed(b"stbl", |w| {
+        w.full_boxed(b"stsd", 0, 0, |w| {
+            w.u32(1); // entry_count
+            // The complete sample entry box, copied from the source.
+            w.bytes(&cfg.sample_entry);
+        });
+        w.full_boxed(b"stts", 0, 0, |w| {
+            w.u32(0);
+        });
+        w.full_boxed(b"stsc", 0, 0, |w| {
+            w.u32(0);
+        });
+        w.full_boxed(b"stsz", 0, 0, |w| {
+            w.u32(0).u32(0);
+        });
+        w.full_boxed(b"stco", 0, 0, |w| {
+            w.u32(0);
         });
     });
 }
