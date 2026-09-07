@@ -98,7 +98,7 @@
         <div class="row" style="margin-top: 0.9rem">
           <label>Segment length <input type="number" id="dur" value="6" min="1" max="30" /> s</label>
           <button id="run" disabled>Package</button>
-          <button id="download" class="ghost" disabled>Download output</button>
+          <button id="download" class="ghost" disabled>Download .zip</button>
         </div>
 
         <progress id="prog" max="100" value="0" hidden></progress>
@@ -338,22 +338,34 @@
         }
 
         // ---- download ----
+        // One archive rather than a dozen separate downloads: a rendition is
+        // many files, and saved individually they scatter into the downloads
+        // folder away from the playlist that references them.
         $("download").addEventListener("click", function () {
           var log = logger("out");
-          log.head("saving " + produced.size + " files — your browser may ask about multiple downloads");
-          var i = 0;
-          produced.forEach(function (blob, name) {
-            setTimeout(function () {
-              var a = document.createElement("a");
-              a.href = URL.createObjectURL(blob);
-              a.download = name;
-              document.body.appendChild(a);
-              a.click();
-              document.body.removeChild(a);
-            }, i * 150);
-            i++;
+          var button = $("download");
+          button.disabled = true;
+          log.head("building archive…");
+
+          var entries = [];
+          produced.forEach(function (blob, name) { entries.push({ name: name, data: blob }); });
+
+          bitrate.createZip(entries).then(function (zip) {
+            var a = document.createElement("a");
+            a.href = URL.createObjectURL(zip);
+            a.download = "hls-output.zip";
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            setTimeout(function () { URL.revokeObjectURL(a.href); }, 30000);
+
+            log.ok("hls-output.zip — " + fmtBytes(zip.size) + ", " + entries.length + " files");
+            log.line("  Unzip anywhere and open the .m3u8 with any HLS player.");
+            button.disabled = false;
+          }).catch(function (error) {
+            log.err(error.message);
+            button.disabled = false;
           });
-          log.line("  Keep every file in one folder, then open the .m3u8 with any HLS player.");
         });
       })();
     </script>

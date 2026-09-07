@@ -1,3 +1,5 @@
+import { downloadZip } from "bitrate-js/zip";
+
 /**
  * Turn in-memory HLS output into something a player can load.
  *
@@ -82,8 +84,25 @@ export function entryPlaylist(files: readonly PackagedFile[]): string | null {
   return (playlists.find((f) => f.name.includes("master")) ?? playlists[0]!).name;
 }
 
-/** Save every output file, as a real deployment would upload them. */
-export function downloadAll(files: readonly PackagedFile[]): void {
+/**
+ * Save the whole output as one archive.
+ *
+ * A rendition is a dozen or more files, and saving them individually makes the
+ * browser prompt about multiple downloads and scatters them into the downloads
+ * folder — where they are no longer next to the playlist that references them.
+ */
+export async function downloadAsZip(
+  files: readonly PackagedFile[],
+  name = "hls-output",
+): Promise<void> {
+  await downloadZip(
+    files.map((f) => ({ name: f.name, data: f.blob })),
+    `${name}.zip`,
+  );
+}
+
+/** Save each file separately — the fallback when an archive is impractical. */
+export function downloadEach(files: readonly PackagedFile[]): void {
   files.forEach((file, i) => {
     // Browsers throttle rapid programmatic downloads; space them out.
     setTimeout(() => {

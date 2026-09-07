@@ -118,3 +118,8 @@ export {
   DEFAULT_LADDER,
 } from "./transcode.js";
 export type { TranscodeOptions } from "./transcode.js";
+
+// Saving a whole rendition as one archive is a common need for anything that
+// lets a user download the result. Tiny, and also available at `bitrate-js/zip`.
+export { createZip, downloadZip, crc32 } from "./zip.js";
+export type { ZipEntry } from "./zip.js";

@@ -231,6 +231,24 @@ Or skip the import map and use the path directly:
 </script>
 ```
 
+### Saving the output
+
+A rendition is many files, and saving them one at a time makes the browser prompt about
+multiple downloads and scatters them away from the playlist that references them. There is
+a dependency-free ZIP writer for that:
+
+```ts
+import { downloadZip } from "bitrate-js/zip";
+
+await downloadZip(
+  output.map((f) => ({ name: f.name, data: f.blob })),
+  "hls-output.zip",
+);
+```
+
+Entries are stored rather than deflated: HLS output is already-compressed video, so
+compressing again costs CPU for nothing.
+
 ### Without modules at all
 
 There is also a classic-script build that defines `window.bitrate`. ES modules cannot load

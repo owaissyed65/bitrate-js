@@ -41,7 +41,11 @@
       "types": "./dist/adapters/appwrite.d.ts",
       "import": "./dist/adapters/appwrite.js"
     },
-    "./global": "./dist/bitrate.global.js"
+    "./global": "./dist/bitrate.global.js",
+    "./zip": {
+      "types": "./dist/zip.d.ts",
+      "import": "./dist/zip.js"
+    }
   },
   "files": [
     "dist"

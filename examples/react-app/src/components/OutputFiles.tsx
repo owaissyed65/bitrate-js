@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 
 import { formatBytes, highlightPlaylist } from "../lib/format";
-import { downloadAll, type PackagedFile } from "../lib/playable";
+import { downloadAsZip, downloadEach, type PackagedFile } from "../lib/playable";
 
 interface Props {
   files: PackagedFile[];
@@ -17,6 +17,21 @@ function kindOf(name: string): string {
 export function OutputFiles({ files }: Props) {
   const [selected, setSelected] = useState<string | null>(null);
   const [text, setText] = useState("");
+  const [zipping, setZipping] = useState(false);
+  const [zipError, setZipError] = useState<string | null>(null);
+
+  async function saveZip() {
+    setZipping(true);
+    setZipError(null);
+    try {
+      await downloadAsZip(files);
+    } catch (e) {
+      // A ZIP cannot describe more than 4 GiB; say so and offer the fallback.
+      setZipError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setZipping(false);
+    }
+  }
 
   const playlists = files.filter((f) => f.name.endsWith(".m3u8"));
 
@@ -56,10 +71,23 @@ export function OutputFiles({ files }: Props) {
             <strong>{formatBytes(total)}</strong> total
           </span>
           <div className="spacer" />
-          <button className="ghost small" onClick={() => downloadAll(files)}>
-            Download all
+          <button className="small" disabled={zipping} onClick={() => void saveZip()}>
+            {zipping ? "Zipping…" : "Download .zip"}
+          </button>
+          <button
+            className="ghost small"
+            onClick={() => downloadEach(files)}
+            title="Save each file separately instead"
+          >
+            Separate files
           </button>
         </div>
+
+        {zipError && (
+          <p className="note err" style={{ marginBottom: "0.6rem" }}>
+            {zipError}
+          </p>
+        )}
 
         <div style={{ maxHeight: 320, overflowY: "auto" }}>
           <table>
