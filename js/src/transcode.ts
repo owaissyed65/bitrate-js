@@ -11,10 +11,10 @@
  */
 
 import { MIME_MANIFEST, MIME_SEGMENT, type Rung } from "./types.js";
-import { readMoov, readSamples, type SampleLocation } from "./mp4-source.js";
+import { readFragments, readMoov, readSamples, type SampleLocation } from "./mp4-source.js";
 import type { OutputFile } from "./remux.js";
 import { ensureWasm } from "./wasm-loader.js";
-import { Fmp4Segmenter, Mp4Demuxer } from "./wasm/bitrate_core.js";
+import { build_audio_sample_entry, Fmp4Segmenter, Mp4Demuxer } from "./wasm/bitrate_core.js";
 
 /** WebCodecs timestamps are microseconds, so the track timescale matches. */
 const TIMESCALE = 1_000_000;
@@ -41,6 +41,15 @@ export interface TranscodeOptions {
   readWindow?: number | undefined;
   signal?: AbortSignal | undefined;
   onProgress?: ((p: { processed: number; total: number; fraction: number }) => void) | undefined;
+  /**
+   * Re-encode the source audio and mux it into every rendition. Default `true`.
+   *
+   * Audio is decoded and encoded once and shared across rungs — re-encoding
+   * identical audio per rung would be pure waste.
+   */
+  audio?: boolean;
+  /** AAC bitrate when re-encoding audio. Default 128 kbps. */
+  audioBitrate?: number;
 }
 
 /** A sensible default ladder for 16:9 content. */
@@ -175,6 +184,179 @@ const even = (n: number) => Math.max(2, Math.round(n / 2) * 2);
 const lowestBitrate = (ladder: readonly Rung[]) =>
   ladder.reduce((min, r) => Math.min(min, r.bitrate), Number.POSITIVE_INFINITY) || 1_000_000;
 
+/** Default AAC bitrate when re-encoding audio. */
+const DEFAULT_AUDIO_BITRATE = 128_000;
+
+/**
+ * Re-encodes the source audio and hands the result to a rung's segmenter.
+ *
+ * Audio is decoded and encoded **once**, not once per rung: the same AAC
+ * stream is muxed into every rendition, because there is no reason to re-encode
+ * identical audio three times. Video is what differs between rungs.
+ */
+class AudioPipeline {
+  readonly #decoder: AudioDecoder;
+  readonly #encoder: AudioEncoder;
+  /** Encoded frames, waiting to be attached to the rungs. */
+  readonly #encoded: { data: Uint8Array; duration: number }[] = [];
+
+  #sampleEntry: Uint8Array | null = null;
+  #error: Error | null = null;
+  #sampleRate = 0;
+  #channels = 0;
+
+  private constructor(decoder: AudioDecoder, encoder: AudioEncoder) {
+    this.#decoder = decoder;
+    this.#encoder = encoder;
+  }
+
+  /**
+   * Build a pipeline for a source's audio track, or `null` when the browser
+   * cannot handle it — a silent result beats failing the whole job.
+   */
+  static async create(
+    specificConfig: Uint8Array,
+    sampleRate: number,
+    channels: number,
+    bitrate: number,
+  ): Promise<AudioPipeline | null> {
+    if (typeof AudioDecoder !== "function" || typeof AudioEncoder !== "function") return null;
+    if (specificConfig.length === 0 || sampleRate === 0 || channels === 0) return null;
+
+    // The AAC profile lives in the top 5 bits of the config.
+    const objectType = specificConfig[0]! >> 3;
+    const decoderConfig: AudioDecoderConfig = {
+      codec: `mp4a.40.${objectType || 2}`,
+      sampleRate,
+      numberOfChannels: channels,
+      description: specificConfig,
+    };
+    const encoderConfig: AudioEncoderConfig = {
+      codec: "mp4a.40.2", // AAC-LC: the broadly decodable choice
+      sampleRate,
+      numberOfChannels: channels,
+      bitrate,
+    };
+
+    try {
+      const [decodable, encodable] = await Promise.all([
+        AudioDecoder.isConfigSupported(decoderConfig),
+        AudioEncoder.isConfigSupported(encoderConfig),
+      ]);
+      if (!decodable.supported || !encodable.supported) return null;
+    } catch {
+      return null;
+    }
+
+    let pipeline: AudioPipeline;
+
+    const decoder = new AudioDecoder({
+      output: (frame) => {
+        try {
+          pipeline.#encoder.encode(frame);
+        } finally {
+          // AudioData holds memory that is not garbage collected.
+          frame.close();
+        }
+      },
+      error: (error) => {
+        pipeline.#error = error instanceof Error ? error : new Error(String(error));
+      },
+    });
+
+    const encoder = new AudioEncoder({
+      output: (chunk, metadata) => {
+        // The encoder reports its AudioSpecificConfig with the first chunk, so
+        // the output sample entry cannot be built any earlier.
+        if (!pipeline.#sampleEntry) {
+          const description = metadata?.decoderConfig?.description;
+          if (description) {
+            try {
+              pipeline.#sampleEntry = build_audio_sample_entry(
+                pipeline.#sampleRate,
+                pipeline.#channels,
+                new Uint8Array(description as ArrayBuffer),
+                bitrate,
+              );
+            } catch (error) {
+              pipeline.#error = error instanceof Error ? error : new Error(String(error));
+              return;
+            }
+          }
+        }
+
+        const data = new Uint8Array(chunk.byteLength);
+        chunk.copyTo(data);
+        // Durations are in microseconds; the track runs at the sample rate.
+        const duration = Math.round(((chunk.duration ?? 0) / 1_000_000) * pipeline.#sampleRate);
+        pipeline.#encoded.push({ data, duration });
+      },
+      error: (error) => {
+        pipeline.#error = error instanceof Error ? error : new Error(String(error));
+      },
+    });
+
+    pipeline = new AudioPipeline(decoder, encoder);
+    pipeline.#sampleRate = sampleRate;
+    pipeline.#channels = channels;
+
+    decoder.configure(decoderConfig);
+    encoder.configure(encoderConfig);
+    return pipeline;
+  }
+
+  /** The output track's sample entry, once the encoder has revealed it. */
+  get sampleEntry(): Uint8Array | null {
+    return this.#sampleEntry;
+  }
+
+  get sampleRate(): number {
+    return this.#sampleRate;
+  }
+
+  get error(): Error | null {
+    return this.#error;
+  }
+
+  /** Feed one encoded frame from the source. */
+  decode(data: Uint8Array, timestampUs: number, durationUs: number): void {
+    if (this.#error) throw this.#error;
+    this.#decoder.decode(
+      new EncodedAudioChunk({ type: "key", timestamp: timestampUs, duration: durationUs, data }),
+    );
+  }
+
+  /** Take everything encoded so far. */
+  take(): { data: Uint8Array; duration: number }[] {
+    if (this.#error) throw this.#error;
+    return this.#encoded.splice(0, this.#encoded.length);
+  }
+
+  /** True while the encoder is behind, so the caller can wait. */
+  get busy(): boolean {
+    return this.#decoder.decodeQueueSize > MAX_QUEUED_FRAMES;
+  }
+
+  async flush(): Promise<void> {
+    await this.#decoder.flush();
+    await this.#encoder.flush();
+    if (this.#error) throw this.#error;
+  }
+
+  close(): void {
+    try {
+      if (this.#decoder.state !== "closed") this.#decoder.close();
+    } catch {
+      // Already closed.
+    }
+    try {
+      if (this.#encoder.state !== "closed") this.#encoder.close();
+    } catch {
+      // Already closed.
+    }
+  }
+}
+
 /** One rung's encoder plus the segmenter it feeds. */
 interface RungPipeline {
   name: string;
@@ -186,6 +368,10 @@ interface RungPipeline {
   /** Output waiting to be yielded to the caller. */
   pending: OutputFile[];
   error?: Error;
+  /** The re-encoded audio track description, when there is audio. */
+  audioSampleEntry: Uint8Array | null;
+  /** The audio track timescale, which is its sample rate. */
+  audioTimescale: number;
 }
 
 /**
@@ -215,6 +401,8 @@ export async function* transcode(
     readWindow,
     signal,
     onProgress,
+    audio: wantAudio = true,
+    audioBitrate = DEFAULT_AUDIO_BITRATE,
   } = options;
 
   await ensureWasm();
@@ -223,11 +411,27 @@ export async function* transcode(
   const moov = await readMoov(file);
   const demuxer = new Mp4Demuxer(moov);
 
+  // Fragmented sources keep their samples in moof boxes.
+  if (demuxer.isFragmented) {
+    for await (const fragment of readFragments(file, { signal })) {
+      demuxer.addFragment(fragment.bytes, fragment.offset);
+    }
+  }
+
   const sourceWidth = demuxer.width;
   const sourceHeight = demuxer.height;
   const sourceTimescale = demuxer.timescale;
   const sourceConfig = demuxer.codecConfig;
   const samples = buildSampleList(demuxer);
+
+  // Audio, when the source has it and the caller wants it kept.
+  const hasAudio = wantAudio && demuxer.hasAudio;
+  const audioSamples = hasAudio ? buildAudioSampleList(demuxer) : [];
+  const audioTimescale = demuxer.audioTimescale;
+  const audioSpecificConfig = hasAudio ? demuxer.audioSpecificConfig : new Uint8Array();
+  const audioSampleRate = demuxer.audioSampleRate || audioTimescale;
+  const audioChannels = demuxer.audioChannels;
+
   demuxer.free();
 
   if (samples.length === 0) {
@@ -245,6 +449,7 @@ export async function* transcode(
 
   const plan = planLadder(ladder, sourceWidth, sourceHeight);
   const rungs: RungPipeline[] = [];
+  let audioPipeline: AudioPipeline | null = null;
 
   try {
     // Resolve every encoder configuration before creating anything, so an
@@ -254,12 +459,79 @@ export async function* transcode(
       plan.map((rung) => resolveEncoderConfig(rung.width, rung.height, rung.bitrate, framerate)),
     );
 
+    // Set the audio up first: its sample entry has to exist before any
+    // segmenter is created, since it changes the init segment's moov.
+    if (hasAudio && audioSamples.length > 0) {
+      audioPipeline = await AudioPipeline.create(
+        audioSpecificConfig,
+        audioSampleRate,
+        audioChannels,
+        audioBitrate,
+      );
+
+      if (audioPipeline) {
+        // Audio is re-encoded in one pass before the video, for two reasons:
+        // the encoder only reveals its AudioSpecificConfig once it has produced
+        // a chunk, and that config has to exist before any segmenter is created
+        // because it changes the init segment. Encoded AAC is small next to the
+        // video, so holding it is cheap.
+        for await (const item of readSamples(file, audioSamples, { readWindow, signal })) {
+          const sample = item.sample as SampleLocation & { decodeTime: number };
+          audioPipeline.decode(
+            item.data,
+            Math.round((sample.decodeTime / audioTimescale) * 1_000_000),
+            Math.round((sample.duration / audioTimescale) * 1_000_000),
+          );
+          while (audioPipeline.busy) {
+            signal?.throwIfAborted();
+            await new Promise((resolve) => setTimeout(resolve, 1));
+          }
+        }
+        await audioPipeline.flush();
+      }
+    }
+
+    /** Every re-encoded audio frame, with the time it starts at. */
+    const audioTrack: { data: Uint8Array; duration: number; startSeconds: number }[] = [];
+    if (audioPipeline) {
+      const rate = audioPipeline.sampleRate || 1;
+      let ticks = 0;
+      for (const frame of audioPipeline.take()) {
+        audioTrack.push({ ...frame, startSeconds: ticks / rate });
+        ticks += frame.duration;
+      }
+    }
+    const audioEntry = audioPipeline?.sampleEntry ?? null;
+    const outputAudioRate = audioPipeline?.sampleRate ?? 0;
+
     for (const rung of plan) {
-      rungs.push(createRung(prefix, rung, segmentDuration));
+      rungs.push(createRung(prefix, rung, segmentDuration, audioEntry, outputAudioRate));
     }
     for (let i = 0; i < rungs.length; i++) {
       rungs[i]!.encoder.configure(configs[i]!);
     }
+
+    // How much of the audio each rung has been given so far. The same frames go
+    // to every rendition — re-encoding identical audio per rung is pure waste.
+    let audioPushed = 0;
+
+    /** Give every rung the audio up to `seconds`. */
+    const advanceAudio = (seconds: number) => {
+      // A rung's segmenter does not exist until its video encoder has produced
+      // a chunk, since the segmenter needs the encoder's avcC. Hold the audio
+      // until then rather than consuming it into nothing — the frames still
+      // belong to the first segment when it is eventually created.
+      const ready = rungs.filter((r) => r.segmenter?.hasAudio);
+      if (ready.length === 0) return;
+
+      while (audioPushed < audioTrack.length && audioTrack[audioPushed]!.startSeconds <= seconds) {
+        const frame = audioTrack[audioPushed]!;
+        for (const rung of ready) {
+          rung.segmenter!.pushAudioSample(frame.data, frame.duration);
+        }
+        audioPushed++;
+      }
+    };
 
     const decoder = createDecoder(sourceConfig, sourceWidth, sourceHeight);
 
@@ -296,6 +568,9 @@ export async function* transcode(
         for (const rung of rungs) {
           rung.encoder.encode(frame, { keyFrame: forceKey });
         }
+        // Keep the audio level with the video, so a segment closing here
+        // carries the sound that belongs to it.
+        advanceAudio(frame.timestamp / 1_000_000);
         frame.close();
 
         processed++;
@@ -316,6 +591,10 @@ export async function* transcode(
       frame.close();
     }
 
+    // Flush every encoder before touching the audio. A rung's segmenter is
+    // created by its encoder's *output callback*, which is asynchronous — on a
+    // short video none of them may exist yet, and audio handed over before then
+    // would have nowhere to go.
     for (const rung of rungs) {
       // A codec that already failed is closed, and flushing it throws an
       // unhelpful "closed codec" error that hides the real cause. Report what
@@ -327,8 +606,15 @@ export async function* transcode(
             `${rung.width}x${rung.height} at this bitrate.`,
         );
       }
-
       await rung.encoder.flush();
+    }
+
+    // Now every segmenter exists, so any audio past the last video frame — or
+    // all of it, on a video too short for the callbacks to have fired earlier —
+    // can be handed over.
+    advanceAudio(Number.POSITIVE_INFINITY);
+
+    for (const rung of rungs) {
       rung.segmenter?.finish();
       yield* drainRung(rung);
 
@@ -474,11 +760,19 @@ export async function* packageFrames(
   }
 }
 
-/** Create one rung's encoder and the segmenter it will feed. */
+/**
+ * Create one rung's encoder and the segmenter it will feed.
+ *
+ * `audioSampleEntry` describes the re-encoded audio track, when there is one.
+ * It must be known here because it changes the init segment's `moov`, which is
+ * written the moment the segmenter is created.
+ */
 function createRung(
   prefix: string,
   spec: { width: number; height: number; bitrate: number },
   segmentDuration: number,
+  audioSampleEntry: Uint8Array | null = null,
+  audioTimescale = 0,
 ): RungPipeline {
   const rung: RungPipeline = {
     name: `${prefix}_${spec.height}p`,
@@ -487,6 +781,8 @@ function createRung(
     bitrate: spec.bitrate,
     pending: [],
     encoder: undefined as unknown as VideoEncoder,
+    audioSampleEntry,
+    audioTimescale,
   };
 
   rung.encoder = new VideoEncoder({
@@ -507,6 +803,10 @@ function createRung(
           new Uint8Array(description as ArrayBuffer),
           segmentDuration,
         );
+        // Audio must be declared before the init segment is produced.
+        if (rung.audioSampleEntry && rung.audioTimescale > 0) {
+          rung.segmenter.setAudio(rung.audioTimescale, rung.audioSampleEntry);
+        }
         rung.pending.push({
           name: rung.segmenter.initName(),
           blob: new Blob([rung.segmenter.initSegment() as BlobPart], { type: MIME_SEGMENT }),
@@ -635,6 +935,29 @@ function buildSampleList(demuxer: Mp4Demuxer): (SampleLocation & { decodeTime: n
       duration: durations[i]!,
       isSync: sync[i] === 1,
       compositionOffset: cts[i]!,
+      decodeTime,
+    };
+    decodeTime += durations[i]!;
+  }
+  return out;
+}
+
+/** The audio track's sample locations, with decode times accumulated. */
+function buildAudioSampleList(demuxer: Mp4Demuxer): (SampleLocation & { decodeTime: number })[] {
+  const offsets = demuxer.audioSampleOffsets();
+  const sizes = demuxer.audioSampleSizes();
+  const durations = demuxer.audioSampleDurations();
+
+  const out: (SampleLocation & { decodeTime: number })[] = new Array(offsets.length);
+  let decodeTime = 0;
+  for (let i = 0; i < offsets.length; i++) {
+    out[i] = {
+      offset: offsets[i]!,
+      size: sizes[i]!,
+      duration: durations[i]!,
+      // Every audio frame is independently decodable.
+      isSync: true,
+      compositionOffset: 0,
       decodeTime,
     };
     decodeTime += durations[i]!;

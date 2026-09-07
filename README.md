@@ -121,9 +121,16 @@ for await (const out of remux(file, { prefix: "720p", segmentDuration: 6 })) {
 import { transcode, isTranscodeSupported, DEFAULT_LADDER } from "bitrate-js";
 
 if (isTranscodeSupported()) {
-  for await (const out of transcode(file, { ladder: DEFAULT_LADDER })) { … }
+  for await (const out of transcode(file, {
+    ladder: DEFAULT_LADDER,
+    audio: true,          // default: re-encode and keep the sound
+    audioBitrate: 128_000,
+  })) { … }
 }
 ```
+
+Audio is decoded and re-encoded **once** and muxed into every rung — re-encoding identical
+audio per rendition would be pure waste.
 
 ### Frames from somewhere else
 

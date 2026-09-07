@@ -77,6 +77,10 @@ export interface SourceInfo {
   audioTimescale: number;
   /** Number of audio frames, or 0 when silent. */
   audioSampleCount: number;
+  /** Audio channel count, or 0 when silent or not AAC. */
+  audioChannels: number;
+  /** Bytes of AudioSpecificConfig, which transcoding needs in order to decode. */
+  audioConfigBytes: number;
 }
 
 /**
@@ -131,6 +135,8 @@ export async function inspect(file: Blob): Promise<SourceInfo> {
       hasAudio: demuxer.hasAudio,
       audioTimescale: demuxer.audioTimescale,
       audioSampleCount: demuxer.audioSampleCount,
+      audioChannels: demuxer.audioChannels,
+      audioConfigBytes: demuxer.audioSpecificConfig.length,
     };
   } finally {
     demuxer.free();

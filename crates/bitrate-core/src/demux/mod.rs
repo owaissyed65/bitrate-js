@@ -7,7 +7,7 @@
 
 mod fragmented;
 mod mp4;
-mod reader;
+pub(crate) mod reader;
 
 use wasm_bindgen::prelude::*;
 
@@ -203,6 +203,38 @@ impl Mp4Demuxer {
             .as_ref()
             .map(|a| a.samples.iter().map(|s| s.size).collect())
             .unwrap_or_default()
+    }
+
+    /// The source's `AudioSpecificConfig`, which `AudioDecoder` takes as its
+    /// `description`. Empty when there is no audio or it is not AAC.
+    ///
+    /// Remuxing never needs this — it copies the sample entry whole — but
+    /// transcoding must configure a decoder, which requires the bare config.
+    #[wasm_bindgen(getter, js_name = audioSpecificConfig)]
+    pub fn audio_specific_config(&self) -> Vec<u8> {
+        self.audio
+            .as_ref()
+            .and_then(|a| crate::audio::parse_mp4a(&a.sample_entry))
+            .map(|c| c.specific_config)
+            .unwrap_or_default()
+    }
+
+    /// Audio sample rate in Hz, read from the sample entry. Zero when unknown.
+    #[wasm_bindgen(getter, js_name = audioSampleRate)]
+    pub fn audio_sample_rate(&self) -> u32 {
+        self.audio
+            .as_ref()
+            .and_then(|a| crate::audio::parse_mp4a(&a.sample_entry))
+            .map_or(0, |c| c.sample_rate)
+    }
+
+    /// Channel count, read from the sample entry. Zero when unknown.
+    #[wasm_bindgen(getter, js_name = audioChannels)]
+    pub fn audio_channels(&self) -> u16 {
+        self.audio
+            .as_ref()
+            .and_then(|a| crate::audio::parse_mp4a(&a.sample_entry))
+            .map_or(0, |c| c.channels)
     }
 
     /// Duration of each audio frame, in the audio timescale.

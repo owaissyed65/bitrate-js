@@ -7,7 +7,7 @@
 //! Segments always begin on a keyframe, which is what makes each one
 //! independently decodable and therefore seekable.
 
-mod boxes;
+pub(crate) mod boxes;
 mod fragment;
 mod init;
 
