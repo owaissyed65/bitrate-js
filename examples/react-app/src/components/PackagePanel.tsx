@@ -1,4 +1,15 @@
-import { inspect, remux, transcode, LADDERS, isTranscodeSupported } from "bitrate-js";
+import {
+  inspect,
+  remux,
+  transcode,
+  transcodeInWorker,
+  isWorkerTranscodeSupported,
+  posterFrame,
+  thumbnailSprite,
+  isThumbnailSupported,
+  LADDERS,
+  isTranscodeSupported,
+} from "bitrate-js";
 
 import { LadderPicker, type LadderName } from "./LadderPicker";
 import type { SourceInfo } from "bitrate-js";
@@ -28,6 +39,13 @@ export function PackagePanel() {
 
   const [mode, setMode] = useState<Mode>("remux");
   const [ladderName, setLadderName] = useState<LadderName>("standard");
+  // The worker keeps the tab usable while every frame is re-encoded.
+  const [useWorker, setUseWorker] = useState(true);
+
+  const [poster, setPoster] = useState<{ url: string; at: number; bytes: number } | null>(null);
+  const [sprite, setSprite] = useState<{ url: string; bytes: number; times: number[]; columns: number } | null>(null);
+  const [stillsBusy, setStillsBusy] = useState(false);
+  const [stillsError, setStillsError] = useState<string | null>(null);
   const [segmentDuration, setSegmentDuration] = useState(6);
 
   const [running, setRunning] = useState(false);
@@ -58,10 +76,59 @@ export function PackagePanel() {
       return URL.createObjectURL(picked);
     });
 
+    setPoster((old) => {
+      if (old) URL.revokeObjectURL(old.url);
+      return null;
+    });
+    setSprite((old) => {
+      if (old) URL.revokeObjectURL(old.url);
+      return null;
+    });
+    setStillsError(null);
+
     try {
       setInfo(await inspect(picked));
     } catch (e) {
       setInspectError(e instanceof Error ? e.message : String(e));
+      return;
+    }
+
+    void makeStills(picked);
+  }
+
+  /**
+   * A poster and a scrub-bar sheet, taken as soon as a file is chosen.
+   *
+   * This is what an upload form actually needs first — something to show while
+   * the packaging runs — and it costs a few hundred kilobytes of reading rather
+   * than a round trip to a server with ffmpeg on it.
+   */
+  async function makeStills(picked: File) {
+    if (!isThumbnailSupported()) {
+      setStillsError("This browser has no WebCodecs, so stills cannot be decoded here.");
+      return;
+    }
+
+    setStillsBusy(true);
+    try {
+      const shot = await posterFrame(picked, { atFraction: 0.1, maxWidth: 480 });
+      setPoster({
+        url: URL.createObjectURL(shot.blob),
+        at: shot.atSeconds,
+        bytes: shot.blob.size,
+      });
+
+      const sheet = await thumbnailSprite(picked, { count: 8, maxWidth: 160 });
+      setSprite({
+        url: URL.createObjectURL(sheet.blob),
+        bytes: sheet.blob.size,
+        times: sheet.times,
+        columns: sheet.columns,
+      });
+    } catch (e) {
+      setStillsError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setStillsBusy(false);
     }
   }
 
@@ -85,7 +152,7 @@ export function PackagePanel() {
       const stream =
         mode === "remux"
           ? remux(file, { prefix: "out", segmentDuration, onProgress: (p) => setProgress(p.fraction) })
-          : transcode(file, {
+          : (useWorker && isWorkerTranscodeSupported() ? transcodeInWorker : transcode)(file, {
               prefix: "out",
               segmentDuration,
               ladder: LADDERS[ladderName],
@@ -208,6 +275,68 @@ export function PackagePanel() {
                   untouched, muxed as a second track.
                 </p>
               )}
+
+              {/* Stills, taken from the file itself — no server, no ffmpeg. */}
+              {(stillsBusy || poster || stillsError) && (
+                <div style={{ marginTop: "1rem" }}>
+                  <h3 style={{ fontSize: "0.92rem", margin: "0 0 0.15rem" }}>Stills</h3>
+                  <p style={{ color: "var(--muted)", fontSize: "0.82rem", margin: "0 0 0.6rem" }}>
+                    Decoded here from a few hundred kilobytes of the file, not the whole thing.
+                  </p>
+
+                  {stillsBusy && !poster && (
+                    <p className="note">Decoding a frame…</p>
+                  )}
+                  {stillsError && <p className="note err">{stillsError}</p>}
+
+                  {poster && (
+                    <>
+                      <img
+                        src={poster.url}
+                        alt={`Poster frame at ${poster.at.toFixed(2)} seconds`}
+                        style={{
+                          maxWidth: "100%",
+                          borderRadius: "8px",
+                          border: "1px solid var(--border)",
+                          display: "block",
+                        }}
+                      />
+                      <p
+                        className="mono"
+                        style={{ color: "var(--dim)", fontSize: "0.76rem", margin: "0.35rem 0 0" }}
+                      >
+                        poster · {poster.at.toFixed(2)}s · {formatBytes(poster.bytes)} webp
+                      </p>
+                    </>
+                  )}
+
+                  {sprite && (
+                    <div style={{ marginTop: "0.9rem" }}>
+                      <img
+                        src={sprite.url}
+                        alt={`Sprite sheet of ${sprite.times.length} stills`}
+                        style={{
+                          maxWidth: "100%",
+                          borderRadius: "8px",
+                          border: "1px solid var(--border)",
+                          display: "block",
+                        }}
+                      />
+                      <p
+                        className="mono"
+                        style={{ color: "var(--dim)", fontSize: "0.76rem", margin: "0.35rem 0 0" }}
+                      >
+                        scrub sheet · {sprite.times.length} tiles across {sprite.columns} ·{" "}
+                        {formatBytes(sprite.bytes)}
+                      </p>
+                      <p className="note" style={{ marginTop: "0.5rem" }}>
+                        This is what a player shows when you drag along the scrub bar. One sheet is
+                        far cheaper to serve than {sprite.times.length} separate images.
+                      </p>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -271,6 +400,23 @@ export function PackagePanel() {
               sourceWidth={info?.width}
               sourceHeight={info?.height}
             />
+            <div className="row" style={{ marginTop: "0.6rem" }}>
+              <label className="chip" style={{ cursor: "pointer" }}>
+                <input
+                  type="checkbox"
+                  checked={useWorker}
+                  disabled={running || !isWorkerTranscodeSupported()}
+                  onChange={(e) => setUseWorker(e.target.checked)}
+                />{" "}
+                run on a worker thread
+              </label>
+              <span style={{ color: "var(--dim)", fontSize: "0.82rem" }}>
+                {useWorker
+                  ? "the tab stays usable, and a backgrounded tab is not throttled"
+                  : "encodes on the main thread — the page will stutter on a long video"}
+              </span>
+            </div>
+
             {info && (
               <p className="note" style={{ marginTop: "0.6rem" }}>
                 Rungs above a {info.height}p source are dropped rather than upscaled — upscaling
