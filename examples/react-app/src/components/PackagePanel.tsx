@@ -268,6 +268,7 @@ export function PackagePanel() {
               value={ladderName}
               onChange={setLadderName}
               disabled={running}
+              sourceWidth={info?.width}
               sourceHeight={info?.height}
             />
             {info && (

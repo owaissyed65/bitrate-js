@@ -341,11 +341,31 @@ export function planLadder(
   allowUpscale = false,
 ): { width: number; height: number; bitrate: number }[] {
   const usable = allowUpscale ? [...ladder] : ladder.filter((r) => r.height <= sourceHeight);
+  const tooTall = allowUpscale ? [] : ladder.filter((r) => r.height > sourceHeight);
+
   // If every rung is taller than the source, keep the source resolution at the
   // lowest requested bitrate rather than producing nothing.
-  const rungs = usable.length > 0 ? usable : [{ height: sourceHeight, bitrate: lowestBitrate(ladder) }];
+  let rungs =
+    usable.length > 0 ? usable : [{ height: sourceHeight, bitrate: lowestBitrate(ladder) }];
 
-  return rungs
+  // Where rungs were dropped for being taller, the source's own resolution
+  // takes the top of the ladder.
+  //
+  // Dropping alone loses real quality: a 1074p source against a ladder topping
+  // out at 1080 lost its 1080 rung by six pixels and was encoded no higher than
+  // 720p — worse than the source, for nothing. Nothing is upscaled here; the
+  // top rung simply becomes exactly what the source already is, carrying the
+  // bitrate of the shortest rung that was dropped, which is the one written for
+  // roughly this resolution.
+  if (tooTall.length > 0 && usable.length > 0) {
+    const tallest = Math.max(...usable.map((r) => r.height));
+    if (even(tallest) < even(sourceHeight)) {
+      const nearest = tooTall.reduce((a, b) => (a.height <= b.height ? a : b));
+      rungs = [{ height: sourceHeight, bitrate: nearest.bitrate }, ...rungs];
+    }
+  }
+
+  return dedupeByHeight(rungs)
     .map((r) => {
       const height = even(r.height);
       const width = even(Math.round((sourceWidth * height) / sourceHeight));
@@ -355,6 +375,23 @@ export function planLadder(
 }
 
 const even = (n: number) => Math.max(2, Math.round(n / 2) * 2);
+
+/**
+ * One rung per output height, keeping the richest.
+ *
+ * Two rungs that round to the same even height would be named identically —
+ * `video_1080p` twice — so they would overwrite each other's segments and the
+ * master would list the same playlist under two bandwidths.
+ */
+function dedupeByHeight(rungs: readonly Rung[]): Rung[] {
+  const best = new Map<number, Rung>();
+  for (const rung of rungs) {
+    const key = even(rung.height);
+    const existing = best.get(key);
+    if (!existing || rung.bitrate > existing.bitrate) best.set(key, rung);
+  }
+  return [...best.values()];
+}
 const lowestBitrate = (ladder: readonly Rung[]) =>
   ladder.reduce((min, r) => Math.min(min, r.bitrate), Number.POSITIVE_INFINITY) || 1_000_000;
 

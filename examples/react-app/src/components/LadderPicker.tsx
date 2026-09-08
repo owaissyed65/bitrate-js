@@ -6,7 +6,7 @@
  * while the Appwrite tab offered five.
  */
 
-import { LADDERS } from "bitrate-js";
+import { LADDERS, planLadder } from "bitrate-js";
 
 export type LadderName = keyof typeof LADDERS;
 
@@ -16,19 +16,22 @@ interface Props {
   value: LadderName;
   onChange: (name: LadderName) => void;
   disabled?: boolean;
-  /** The source height, so the rungs that will actually survive can be shown. */
+  /** The source size, so the rungs that will actually be produced can be shown. */
+  sourceWidth?: number | undefined;
   sourceHeight?: number | undefined;
 }
 
-export function LadderPicker({ value, onChange, disabled, sourceHeight }: Props) {
-  // Rungs taller than the source are dropped rather than upscaled, so what the
-  // user gets is often not what the preset lists. Show the real answer.
-  const kept =
+export function LadderPicker({ value, onChange, disabled, sourceWidth, sourceHeight }: Props) {
+  // Ask the library rather than reimplementing its rule. A second copy of
+  // "which rungs survive" is a second copy that can disagree — and the preview
+  // is the thing people trust before spending minutes on an encode.
+  const planned =
     sourceHeight === undefined
-      ? LADDERS[value]
-      : LADDERS[value].filter((r) => r.height <= sourceHeight);
+      ? null
+      : planLadder(LADDERS[value], sourceWidth ?? Math.round((sourceHeight * 16) / 9), sourceHeight);
 
-  const effective = kept.length > 0 ? kept.map((r) => `${r.height}p`) : [`${sourceHeight}p`];
+  const effective = (planned ?? LADDERS[value]).map((r) => `${r.height}p`);
+  const dropped = planned ? LADDERS[value].length - planned.length : 0;
 
   return (
     <div className="row" style={{ gap: "0.4rem" }}>
@@ -48,11 +51,8 @@ export function LadderPicker({ value, onChange, disabled, sourceHeight }: Props)
 
       <span className="mono" style={{ color: "var(--muted)", fontSize: "0.78rem" }}>
         {effective.join(" · ")}
-        {sourceHeight !== undefined && kept.length < LADDERS[value].length && (
-          <span style={{ color: "var(--dim)" }}>
-            {" "}
-            ({LADDERS[value].length - kept.length} dropped)
-          </span>
+        {dropped > 0 && (
+          <span style={{ color: "var(--dim)" }}> ({dropped} above the source dropped)</span>
         )}
       </span>
     </div>

@@ -454,6 +454,7 @@ export function AppwritePanel() {
               value={ladderName}
               onChange={setLadderName}
               disabled={running}
+              sourceWidth={sourceInfo?.width}
               sourceHeight={sourceInfo?.height}
             />
           </div>

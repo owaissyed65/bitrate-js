@@ -168,3 +168,64 @@ describe("the default ladder", () => {
     expect(DEFAULT_LADDER).toEqual(LADDERS.standard);
   });
 });
+
+describe("a source slightly shorter than the ladder's top rung", () => {
+  // The reported bug: a 1074p screen recording against LADDERS.uhd produced a
+  // single 720p rendition. 1080 > 1074 by six pixels, so the 1080 rung was
+  // dropped, and the source was re-encoded to something worse than itself.
+  it("keeps the source resolution rather than falling to the next rung down", () => {
+    const plan = planLadder(LADDERS.uhd, 1920, 1074);
+    expect(plan[0]!.height).toBe(1074);
+    expect(plan.map((r) => r.height)).toEqual([1074, 720]);
+  });
+
+  it("does the same for the standard ladder", () => {
+    const plan = planLadder(LADDERS.standard, 1920, 1074);
+    expect(plan.map((r) => r.height)).toEqual([1074, 720, 480]);
+  });
+
+  it("gives the source rung the bitrate of the shortest rung dropped", () => {
+    // uhd drops 2160@16M, 1440@10M and 1080@5M; 5M is the one written for
+    // roughly this resolution.
+    const plan = planLadder(LADDERS.uhd, 1920, 1074);
+    expect(plan[0]!.bitrate).toBe(5_000_000);
+  });
+
+  it("never upscales — the top rung is exactly the source height", () => {
+    for (const height of [1074, 990, 800, 600]) {
+      const plan = planLadder(LADDERS.uhd, 1920, height);
+      expect(Math.max(...plan.map((r) => r.height)), `${height}p`).toBeLessThanOrEqual(
+        height + 1, // +1 only for the rounding to an even number
+      );
+    }
+  });
+
+  it("adds nothing when the ladder already reaches the source", () => {
+    // Every rung fits, so there is nothing to make up for.
+    const plan = planLadder(LADDERS.standard, 1920, 1080);
+    expect(plan.map((r) => r.height)).toEqual([1080, 720, 480]);
+  });
+
+  it("adds nothing when the user asked for a deliberately small ladder", () => {
+    // single is one 720p rung. Nothing was dropped for being too tall, so a
+    // 1074p source still gets exactly what was asked for.
+    const plan = planLadder(LADDERS.single, 1920, 1074);
+    expect(plan.map((r) => r.height)).toEqual([720]);
+  });
+
+  it("still falls back to the source when every rung is too tall", () => {
+    const plan = planLadder(LADDERS.uhd, 640, 360);
+    expect(plan.map((r) => r.height)).toEqual([360]);
+  });
+
+  it("never emits two rungs with the same name", () => {
+    // Same height twice would mean the same file names, so one rendition would
+    // overwrite the other's segments.
+    for (const height of [1074, 1080, 726, 722, 486, 361]) {
+      for (const ladder of Object.values(LADDERS)) {
+        const heights = planLadder(ladder, 1920, height).map((r) => r.height);
+        expect(new Set(heights).size, `${height}p`).toBe(heights.length);
+      }
+    }
+  });
+});
