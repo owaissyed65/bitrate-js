@@ -8,6 +8,13 @@
 /** MIME types the packager emits. */
 export const MIME_MANIFEST = "application/vnd.apple.mpegurl";
 export const MIME_SEGMENT = "video/mp4";
+/**
+ * WebVTT subtitles.
+ *
+ * Serving these as `text/plain` is the usual mistake: the cues fetch fine and
+ * the player shows nothing, with no error to go on.
+ */
+export const MIME_VTT = "text/vtt";
 
 /** One rung of the adaptive-bitrate ladder. */
 export interface Rung {
@@ -31,7 +38,7 @@ export interface UploadItem {
   /** The bytes. */
   blob: Blob;
   /** Correct MIME type — required for playback to work. */
-  contentType: typeof MIME_MANIFEST | typeof MIME_SEGMENT;
+  contentType: typeof MIME_MANIFEST | typeof MIME_SEGMENT | typeof MIME_VTT;
   /** True for `.m3u8` playlists, so callers can apply a shorter cache TTL. */
   isManifest: boolean;
 }

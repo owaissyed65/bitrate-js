@@ -31,7 +31,7 @@ export type {
   QueueReport,
 } from "./types.js";
 
-export { MIME_MANIFEST, MIME_SEGMENT } from "./types.js";
+export { MIME_MANIFEST, MIME_SEGMENT, MIME_VTT } from "./types.js";
 
 export { remux, inspect } from "./remux.js";
 export type { OutputFile, RemuxOptions, SourceInfo } from "./remux.js";
@@ -142,4 +142,7 @@ export type { ZipEntry } from "./zip.js";
 // Storage that addresses files by id rather than path (Appwrite, for one)
 // cannot resolve a playlist's relative URIs; rewrite them to absolute URLs.
 export { rewritePlaylistUris, playlistReferences } from "./playlist.js";
+
+export { srtToVtt, subtitleFiles, attachSubtitles } from "./subtitles.js";
+export type { SubtitleTrack, SubtitleOptions } from "./subtitles.js";
 export type { UriResolver } from "./playlist.js";
