@@ -9,10 +9,6 @@ on:
     # Nothing else changes what is deployed, so nothing else needs to rebuild.
     paths:
       - "examples/react-app/**"
-      - "js/**"
-      - "crates/**"
-      - "Cargo.*"
-      - "rust-toolchain.toml"
       - ".github/workflows/pages.yml"
   # And a button, for redeploying without a code change.
   workflow_dispatch:
@@ -38,27 +34,12 @@ jobs:
         with:
           node-version: 20
           cache: npm
-          cache-dependency-path: |
-            js/package-lock.json
-            examples/react-app/package-lock.json
+          cache-dependency-path: examples/react-app/package-lock.json
 
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: cargo-pages-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
-
-      # The prebuilt binary; `cargo install wasm-pack` compiles for minutes.
-      - run: npm install -g wasm-pack
-
-      # The library first: the showcase depends on it by path, so its dist must
-      # exist — and be current — before the app is built against it.
-      - name: Build the library
-        working-directory: js
-        run: npm ci && npm run build
-
+      # No Rust here: the showcase installs bitrate-js from npm like any other
+      # consumer, so the WASM arrives prebuilt and inlined. That also means the
+      # deployed site exercises the published package rather than a local build
+      # that might differ from it.
       - name: Build the showcase
         working-directory: examples/react-app
         env:
