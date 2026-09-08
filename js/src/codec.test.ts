@@ -10,7 +10,13 @@
 
 import { describe, expect, it } from "vitest";
 
-import { codecStringFromAvcC, LADDERS, levelForFrame, planLadder } from "./transcode.js";
+import {
+  codecStringFromAvcC,
+  DEFAULT_LADDER,
+  LADDERS,
+  levelForFrame,
+  planLadder,
+} from "./transcode.js";
 
 /** Build an avcC header with the given profile, constraints and level. */
 function avcC(profile: number, constraints: number, level: number): Uint8Array {
@@ -152,5 +158,13 @@ describe("upscaling", () => {
   it("can be allowed when a fixed set of renditions matters more", () => {
     const plan = planLadder(LADDERS.standard, 854, 480, true);
     expect(plan.map((r) => r.height)).toEqual([1080, 720, 480]);
+  });
+});
+
+describe("the default ladder", () => {
+  it("is the standard preset, not a second copy of it", () => {
+    // It used to be a duplicate literal. A default that drifts from the preset
+    // it is meant to match fails silently, which is the worst way to fail.
+    expect(DEFAULT_LADDER).toEqual(LADDERS.standard);
   });
 });

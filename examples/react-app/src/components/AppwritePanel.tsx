@@ -9,6 +9,8 @@ import {
   type SourceInfo,
 } from "bitrate-js";
 import { appwriteAdapter } from "bitrate-js/adapters/appwrite";
+
+import { LadderPicker, type LadderName } from "./LadderPicker";
 import { useEffect, useState } from "react";
 
 import { formatBytes } from "../lib/format";
@@ -104,7 +106,7 @@ export function AppwritePanel() {
   const [anonymous, setAnonymous] = useState(true);
   const [publicRead, setPublicRead] = useState(true);
   const [mode, setMode] = useState<"remux" | "transcode">("remux");
-  const [ladderName, setLadderName] = useState<keyof typeof LADDERS>("standard");
+  const [ladderName, setLadderName] = useState<LadderName>("standard");
   const [sourceInfo, setSourceInfo] = useState<SourceInfo | null>(null);
 
   const [running, setRunning] = useState(false);
@@ -447,22 +449,13 @@ export function AppwritePanel() {
         </div>
 
         {mode === "transcode" && (
-          <div className="row" style={{ marginBottom: "0.9rem" }}>
-            <span style={{ color: "var(--dim)", fontSize: "0.82rem" }}>ladder</span>
-            {(Object.keys(LADDERS) as (keyof typeof LADDERS)[]).map((name) => (
-              <button
-                key={name}
-                className={`small ${ladderName === name ? "" : "ghost"}`}
-                onClick={() => setLadderName(name)}
-                disabled={running}
-                title={LADDERS[name].map((r) => `${r.height}p @ ${(r.bitrate / 1e6).toFixed(1)}M`).join("  ·  ")}
-              >
-                {name}
-              </button>
-            ))}
-            <span className="mono" style={{ color: "var(--muted)", fontSize: "0.78rem" }}>
-              {LADDERS[ladderName].map((r) => `${r.height}p`).join(" · ")}
-            </span>
+          <div style={{ marginBottom: "0.9rem" }}>
+            <LadderPicker
+              value={ladderName}
+              onChange={setLadderName}
+              disabled={running}
+              sourceHeight={sourceInfo?.height}
+            />
           </div>
         )}
 

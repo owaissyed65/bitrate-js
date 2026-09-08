@@ -1,4 +1,6 @@
-import { inspect, remux, transcode, DEFAULT_LADDER, isTranscodeSupported } from "bitrate-js";
+import { inspect, remux, transcode, LADDERS, isTranscodeSupported } from "bitrate-js";
+
+import { LadderPicker, type LadderName } from "./LadderPicker";
 import type { SourceInfo } from "bitrate-js";
 import { useRef, useState } from "react";
 
@@ -25,6 +27,7 @@ export function PackagePanel() {
   const [inspectError, setInspectError] = useState<string | null>(null);
 
   const [mode, setMode] = useState<Mode>("remux");
+  const [ladderName, setLadderName] = useState<LadderName>("standard");
   const [segmentDuration, setSegmentDuration] = useState(6);
 
   const [running, setRunning] = useState(false);
@@ -85,7 +88,7 @@ export function PackagePanel() {
           : transcode(file, {
               prefix: "out",
               segmentDuration,
-              ladder: DEFAULT_LADDER,
+              ladder: LADDERS[ladderName],
               onProgress: (p) => setProgress(p.fraction),
             });
 
@@ -259,13 +262,21 @@ export function PackagePanel() {
           </p>
         )}
 
-        {mode === "transcode" && info && (
-          <p className="note" style={{ marginTop: "0.8rem" }}>
-            Ladder for a {info.height}p source, with rungs above it dropped rather than upscaled:{" "}
-            {DEFAULT_LADDER.filter((r) => r.height <= info.height)
-              .map((r) => `${r.height}p`)
-              .join(" · ") || `${info.height}p`}
-          </p>
+        {mode === "transcode" && (
+          <div style={{ marginTop: "0.9rem" }}>
+            <LadderPicker
+              value={ladderName}
+              onChange={setLadderName}
+              disabled={running}
+              sourceHeight={info?.height}
+            />
+            {info && (
+              <p className="note" style={{ marginTop: "0.6rem" }}>
+                Rungs above a {info.height}p source are dropped rather than upscaled — upscaling
+                costs encoding time and storage and adds no detail.
+              </p>
+            )}
+          </div>
         )}
 
         {(running || elapsed !== null) && (

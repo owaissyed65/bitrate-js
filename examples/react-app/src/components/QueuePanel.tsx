@@ -1,9 +1,10 @@
-import { HlsQueue } from "bitrate-js";
+import { HlsQueue, LADDERS, isTranscodeSupported } from "bitrate-js";
 import type { UploadItem } from "bitrate-js";
 import { useRef, useState } from "react";
 
 import { formatBytes } from "../lib/format";
 import { Dropzone } from "./Dropzone";
+import { LadderPicker, type LadderName } from "./LadderPicker";
 
 interface JobView {
   id: string;
@@ -39,6 +40,8 @@ export function QueuePanel() {
   );
   const [flaky, setFlaky] = useState(false);
   const [includeBroken, setIncludeBroken] = useState(true);
+  const [mode, setMode] = useState<"remux" | "transcode">("remux");
+  const [ladderName, setLadderName] = useState<LadderName>("mobile");
   const queueRef = useRef<HlsQueue | null>(null);
 
   function addFiles(picked: File[]) {
@@ -66,6 +69,8 @@ export function QueuePanel() {
     let attempts = 0;
 
     const queue = new HlsQueue({
+      mode,
+      ...(mode === "transcode" ? { ladder: LADDERS[ladderName] } : {}),
       segmentDuration: 6,
       concurrency: 1,
       retries: flaky ? 4 : 2,
@@ -160,6 +165,40 @@ export function QueuePanel() {
           label="Add videos"
           hint="Pick several. They are processed in order."
         />
+
+        <div className="row" style={{ marginTop: "0.9rem" }}>
+          <button
+            className={mode === "remux" ? "small" : "small ghost"}
+            onClick={() => setMode("remux")}
+            disabled={running}
+          >
+            Remux
+          </button>
+          <button
+            className={mode === "transcode" ? "small" : "small ghost"}
+            onClick={() => setMode("transcode")}
+            disabled={running || !isTranscodeSupported()}
+            title={isTranscodeSupported() ? undefined : "This browser has no WebCodecs"}
+          >
+            Transcode to ladder
+          </button>
+          <span style={{ color: "var(--dim)", fontSize: "0.82rem" }}>
+            {mode === "remux"
+              ? "chunk without re-encoding — seconds"
+              : "re-encode every file into a ladder — minutes each"}
+          </span>
+        </div>
+
+        {mode === "transcode" && (
+          <div style={{ marginTop: "0.7rem" }}>
+            <LadderPicker value={ladderName} onChange={setLadderName} disabled={running} />
+            <p className="note warn" style={{ marginTop: "0.6rem" }}>
+              Every file in the batch is re-encoded once per rung. With a queue this multiplies
+              quickly — <code className="mono">mobile</code> or{" "}
+              <code className="mono">single</code> is the sane choice for a batch.
+            </p>
+          </div>
+        )}
 
         <div className="row" style={{ marginTop: "0.9rem" }}>
           <label className="chip" style={{ cursor: "pointer" }}>

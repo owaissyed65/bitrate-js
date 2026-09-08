@@ -206,12 +206,16 @@ export const LADDERS = {
   ],
 } satisfies Record<string, Rung[]>;
 
-/** A sensible default ladder for 16:9 content. */
-export const DEFAULT_LADDER: Rung[] = [
-  { height: 1080, bitrate: 5_000_000 },
-  { height: 720, bitrate: 2_800_000 },
-  { height: 480, bitrate: 1_200_000 },
-];
+/**
+ * The default ladder — an alias for {@link LADDERS.standard}.
+ *
+ * Kept for the name, but deliberately not a second copy of the values: it was
+ * one, and a duplicate default is a value that drifts from the preset it is
+ * supposed to match without anything failing to say so.
+ *
+ * @deprecated Prefer `LADDERS.standard`, or a preset that suits the source.
+ */
+export const DEFAULT_LADDER: Rung[] = LADDERS.standard;
 
 /** Whether this browser can transcode (as opposed to only remux). */
 export function isTranscodeSupported(): boolean {
