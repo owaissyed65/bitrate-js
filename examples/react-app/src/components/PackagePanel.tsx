@@ -50,6 +50,9 @@ export function PackagePanel() {
   const [posterAt, setPosterAt] = useState(0.1);
   const [tileCount, setTileCount] = useState(8);
   const [stillsError, setStillsError] = useState<string | null>(null);
+  // Decoding stills from a long source is real work. Without a way to stop it,
+  // a slow file leaves the panel saying "Decoding a frame…" with no way out.
+  const stillsAbort = useRef<AbortController | null>(null);
   const [segmentDuration, setSegmentDuration] = useState(6);
 
   const [running, setRunning] = useState(false);
@@ -113,16 +116,21 @@ export function PackagePanel() {
       return;
     }
 
+    stillsAbort.current?.abort();
+    const ac = new AbortController();
+    stillsAbort.current = ac;
+
     setStillsBusy(true);
+    setStillsError(null);
     try {
-      const shot = await posterFrame(picked, { atFraction: posterAt, maxWidth: 480 });
+      const shot = await posterFrame(picked, { atFraction: posterAt, maxWidth: 480, signal: ac.signal });
       setPoster({
         url: URL.createObjectURL(shot.blob),
         at: shot.atSeconds,
         bytes: shot.blob.size,
       });
 
-      const sheet = await thumbnailSprite(picked, { count: tileCount, maxWidth: 160 });
+      const sheet = await thumbnailSprite(picked, { count: tileCount, maxWidth: 160, signal: ac.signal });
       setSprite({
         url: URL.createObjectURL(sheet.blob),
         bytes: sheet.blob.size,
@@ -322,13 +330,22 @@ export function PackagePanel() {
                       style={{ width: "4.5rem" }}
                     />
 
-                    <button
-                      className="small ghost"
-                      disabled={stillsBusy || !file}
-                      onClick={() => file && void makeStills(file)}
-                    >
-                      {stillsBusy ? "Working…" : "Regenerate"}
-                    </button>
+                    {stillsBusy ? (
+                      <button
+                        className="small ghost"
+                        onClick={() => stillsAbort.current?.abort(new Error("Stopped"))}
+                      >
+                        Stop
+                      </button>
+                    ) : (
+                      <button
+                        className="small ghost"
+                        disabled={!file}
+                        onClick={() => file && void makeStills(file)}
+                      >
+                        Regenerate
+                      </button>
+                    )}
                   </div>
 
                   {stillsBusy && !poster && (

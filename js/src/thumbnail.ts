@@ -16,7 +16,11 @@
  */
 
 import { readFragments, readMoov, readSamples, type SampleLocation } from "./mp4-source.js";
-import { codecStringFromAvcC, syncSampleAtOrBefore } from "./transcode.js";
+import {
+  applyDecoderBackpressure,
+  codecStringFromAvcC,
+  syncSampleAtOrBefore,
+} from "./transcode.js";
 import { ensureWasm } from "./wasm-loader.js";
 import { Mp4Demuxer } from "./wasm/bitrate_core.js";
 
@@ -134,10 +138,9 @@ export function spriteLayout(
 }
 
 /**
- * Decode the frames nearest each of `targets` (seconds), in one pass.
+ * Decode the frame nearest each of `targets` (seconds).
  *
- * Targets are visited in order and share a decoder, so a sprite sheet of ten
- * stills is not ten separate seeks with ten run-ups.
+ * Targets must be sorted. One decode pass answers all of them.
  */
 async function decodeAt(
   file: Blob,
@@ -187,9 +190,70 @@ async function decodeAt(
     demuxer.free();
 
     let failure: Error | null = null;
-    const ready: VideoFrame[] = [];
+
+    /**
+     * One forward pass over the video, settling each target as it goes by.
+     *
+     * The obvious implementation — seek to each target in turn, decoding from
+     * the keyframe before it — is quadratic on the sources that matter. Long
+     * screen recordings often carry very few keyframes, so "the keyframe before
+     * 2:48" can be the one at 0:00; an eight-tile sheet then decodes the whole
+     * film eight times over. On a three-minute 1080p capture that is tens of
+     * thousands of frames and the tab appears to hang.
+     *
+     * Targets arrive sorted, so a single pass answers all of them: keep the
+     * latest frame at or before the current target, and the moment a frame
+     * overshoots, that keeper *is* the answer.
+     *
+     * Only one frame is ever alive. A 2032x1080 `VideoFrame` holds around 3 MB
+     * of GPU-backed memory that garbage collection will not reclaim, so holding
+     * a run-up's worth is how a tab runs out of memory rather than finishing.
+     */
+    const state: { at: number; best: VideoFrame | null } = { at: 0, best: null };
+
+    /** Whether every target has been answered, so decoding can stop. */
+    const finished = () => state.at >= targets.length;
+
+    const consider = (frame: VideoFrame) => {
+      // Settle every target this frame has moved past.
+      while (state.at < targets.length && frame.timestamp > targets[state.at]! * 1_000_000) {
+        const keeper = state.best;
+        // With no earlier frame — a target before the first decoded frame —
+        // this one is the closest there is.
+        onFrame(keeper ?? frame, targets[state.at]!, state.at);
+        if (keeper) {
+          keeper.close();
+          state.best = null;
+        }
+        state.at++;
+      }
+
+      if (finished()) {
+        frame.close();
+        return;
+      }
+
+      // Still short of the current target, so this is the best answer so far.
+      state.best?.close();
+      state.best = frame;
+    };
+
+    /** Answer any targets left over once the source runs out. */
+    const settleRemaining = () => {
+      const keeper = state.best;
+      state.best = null;
+      while (state.at < targets.length) {
+        if (!keeper) {
+          throw new Error(`No frame could be decoded near ${targets[state.at]!.toFixed(2)}s`);
+        }
+        onFrame(keeper, targets[state.at]!, state.at);
+        state.at++;
+      }
+      keeper?.close();
+    };
+
     const decoder = new VideoDecoder({
-      output: (frame) => ready.push(frame),
+      output: consider,
       error: (error) => {
         failure = error instanceof Error ? error : new Error(String(error));
       },
@@ -202,68 +266,39 @@ async function decodeAt(
     });
 
     try {
-      for (let t = 0; t < targets.length; t++) {
-        signal?.throwIfAborted();
-        const targetUs = Math.max(0, targets[t]!) * 1_000_000;
+      // Decoding may only begin at a sync sample: an inter frame refers to
+      // frames before it. Everything decoded before the first target is thrown
+      // away by `consider`, which is the unavoidable cost of seeking.
+      const first = Math.max(0, targets[0] ?? 0) * 1_000_000;
+      const slice = samples.slice(syncSampleAtOrBefore(samples, timescale, first));
 
-        // Start at the keyframe at or before the target; anything else is
-        // either an error or garbage.
-        const start = syncSampleAtOrBefore(samples, timescale, targetUs);
-        const slice = samples.slice(start);
-
-        // Feed the whole run-up, then decide. Choosing frames as they arrive
-        // does not work: a decoder delivers them well after the samples that
-        // produced them, so an early frame is often the only one available when
-        // the samples run out — which is how every tile of a sprite ended up
-        // being frame zero. Decode past the target, flush, then pick.
-        for await (const item of readSamples(file, slice, { signal })) {
-          if (failure) throw failure;
-          const sample = item.sample as SampleLocation & { decodeTime: number };
-          const timestampUs = Math.round((sample.decodeTime / timescale) * 1_000_000);
-
-          decoder.decode(
-            new EncodedVideoChunk({
-              type: sample.isSync ? "key" : "delta",
-              timestamp: timestampUs,
-              duration: Math.round((sample.duration / timescale) * 1_000_000),
-              data: item.data,
-            }),
-          );
-
-          // Decode strictly past the target: with B-frames, presentation order
-          // is not decode order, so the frame wanted may follow a later sample.
-          if (timestampUs > targetUs) break;
-        }
-
-        await decoder.flush();
+      for await (const item of readSamples(file, slice, { signal })) {
         if (failure) throw failure;
+        if (finished()) break;
 
-        // The frame to keep is the latest at or before the target; if the
-        // target sits before the first frame, the earliest one.
-        const decoded = ready.splice(0, ready.length);
-        let captured: VideoFrame | null = null;
-        for (const frame of decoded) {
-          if (frame.timestamp <= targetUs) {
-            if (!captured || captured.timestamp > targetUs || frame.timestamp > captured.timestamp) {
-              captured = frame;
-            }
-          } else if (!captured) {
-            captured = frame;
-          }
-        }
-        for (const frame of decoded) if (frame !== captured) frame.close();
+        const sample = item.sample as SampleLocation & { decodeTime: number };
+        decoder.decode(
+          new EncodedVideoChunk({
+            type: sample.isSync ? "key" : "delta",
+            timestamp: Math.round((sample.decodeTime / timescale) * 1_000_000),
+            duration: Math.round((sample.duration / timescale) * 1_000_000),
+            data: item.data,
+          }),
+        );
 
-        if (!captured) throw new Error(`No frame could be decoded near ${targets[t]!.toFixed(2)}s`);
-
-        try {
-          onFrame(captured, targets[t]!, t);
-        } finally {
-          captured.close();
-        }
-
+        // Wait for the decoder rather than racing ahead of it. Reading a file is
+        // far faster than decoding it, so without this the queue grows for the
+        // whole pass and every frame lands at once on flush.
+        await applyDecoderBackpressure({ decoder, failure }, signal);
       }
+
+      await decoder.flush();
+      if (failure) throw failure;
+
+      // The last target has no frame after it to trigger the settle.
+      settleRemaining();
     } finally {
-      for (const frame of ready) frame.close();
+      state.best?.close();
       try {
         if (decoder.state !== "closed") decoder.close();
       } catch {
