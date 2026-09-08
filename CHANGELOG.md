@@ -3,6 +3,22 @@
 This project follows [semantic versioning](https://semver.org). Before 1.0 the minor
 version may carry breaking changes; they are called out here.
 
+## Unreleased
+
+- **Transcoding on a worker thread** — `transcodeInWorker` is the same generator as
+  `transcode`, off the main thread. The tab stays usable, and a backgrounded tab is no
+  longer throttled. It pulls rather than pushes, holding after each file until the page
+  asks for the next, so memory stays flat.
+- **Poster frames and sprite sheets** — `posterFrame` and `thumbnailSprite` decode stills
+  from a few hundred kilobytes of the source. Defaults to a tenth of the way in, since
+  plenty of videos open on black.
+- **Subtitles** — `srtToVtt`, `subtitleFiles` and `attachSubtitles` add WebVTT renditions
+  to a master playlist. SubRip is converted. Captions embedded in the bitstream
+  (CEA-608/708) are not extracted.
+- **The WASM no longer loads on import.** It was a static import, so any consumer paid
+  ~114 kB just for importing the package. It is a dynamic import now: eager cost is
+  106 kB, with the WASM fetched on first real use.
+
 ## 0.1.1
 
 No code changes. The npm page now points at the live demo at bitrate-js.vercel.app

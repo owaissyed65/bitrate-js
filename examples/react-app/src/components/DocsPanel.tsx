@@ -41,6 +41,24 @@ ENTRY POINTS
   new HlsQueue(opts)           # batch + retries + resume + skip-on-failure
   isSupported() / isTranscodeSupported()
 
+OFF THE MAIN THREAD
+  transcodeInWorker(file, opts) -> AsyncGenerator<OutputFile>   # same shape
+  createTranscodeWorker()       # reuse one worker across many files
+  Pulls, not pushes: holds after each file until the page asks, so memory
+  stays flat. A worker also escapes background-tab throttling.
+
+STILLS  (needs WebCodecs)
+  posterFrame(file, { atFraction: 0.1, maxWidth: 640 })  -> { blob, width, height, atSeconds }
+  thumbnailSprite(file, { count: 20, maxWidth: 160 })    -> + { columns, rows, tileWidth, times }
+  WebP by default. Defaults to 10% in, not 0:00, since videos open on black.
+
+SUBTITLES  (compose; not a packager option — they come from elsewhere)
+  srtToVtt(srt)                               -> WebVTT string
+  subtitleFiles(tracks, { prefix, duration }) -> OutputFile[]  (.vtt + .m3u8 each)
+  attachSubtitles(masterText, tracks)         -> master with EXT-X-MEDIA + SUBTITLES=
+  track: { language, name, content, default?, autoselect?, forced? }
+  Serve .vtt as text/vtt. Embedded CEA-608/708 is NOT extracted.
+
 OutputFile { name, blob, contentType, isManifest }
 UploadItem { jobId, name, blob, contentType, isManifest }
 UploadAdapter = (item: UploadItem) => Promise<void>
@@ -732,6 +750,32 @@ if (interrupted) {
         <Api sig="inspect(file)">
           Resolves to <code className="mono">SourceInfo</code>: width, height, duration, timescale,
           codec.
+        </Api>
+
+        <Api sig="transcodeInWorker(file, options?)">
+          The same generator, on a worker thread. The tab stays usable and a backgrounded tab
+          is not throttled.
+        </Api>
+        <Api sig="createTranscodeWorker()">
+          Spawn one worker to reuse across many files, instead of paying startup each time.
+        </Api>
+        <Api sig="posterFrame(file, options?)">
+          One still, as an image blob. Defaults to a tenth of the way in.
+        </Api>
+        <Api sig="thumbnailSprite(file, options?)">
+          A grid of stills — what a player shows when you drag the scrub bar.
+        </Api>
+
+        <ApiGroup>Subtitles</ApiGroup>
+        <Api sig="srtToVtt(srt)">
+          SubRip to WebVTT. They differ by a comma before the milliseconds, and a player given
+          the wrong one shows nothing and says nothing.
+        </Api>
+        <Api sig="subtitleFiles(tracks, options)">
+          The <code className="mono">.vtt</code> and its playlist, per track.
+        </Api>
+        <Api sig="attachSubtitles(master, tracks)">
+          Declare the tracks and tag every variant. Miss the second and the menu is empty.
         </Api>
 
         <ApiGroup>Queue</ApiGroup>

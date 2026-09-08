@@ -219,6 +219,77 @@ new HlsQueue({
 ```
 
 
+### Off the main thread
+
+`transcodeInWorker` is the same generator as `transcode`, run on a worker.
+
+```ts
+import { transcodeInWorker } from "bitrate-js";
+
+for await (const out of transcodeInWorker(file, { ladder: LADDERS.standard })) { … }
+```
+
+The tab stays usable, and a backgrounded tab keeps encoding at full speed
+instead of being throttled. The worker pulls rather than pushes — it holds after
+every file until the page asks for the next — so memory stays flat instead of
+growing with the video.
+
+Processing several files? Pay the startup cost once:
+
+```ts
+const worker = createTranscodeWorker();
+try {
+  for (const file of files) {
+    for await (const out of transcodeInWorker(file, { worker })) await upload(out);
+  }
+} finally {
+  worker.terminate();
+}
+```
+
+### Poster frames and scrub thumbnails
+
+Every upload form needs a still before the video plays. This decodes one from a
+few hundred kilobytes of the file — no server, no `ffmpeg`.
+
+```ts
+import { posterFrame, thumbnailSprite } from "bitrate-js";
+
+const poster = await posterFrame(file, { atFraction: 0.1 });
+img.src = URL.createObjectURL(poster.blob);
+
+// The grid a player shows when you drag the scrub bar.
+const sheet = await thumbnailSprite(file, { count: 20, maxWidth: 160 });
+```
+
+Defaults to a tenth of the way in rather than 0:00, because plenty of videos open
+on black or a fade. WebP by default, which is far smaller than JPEG here.
+
+### Subtitles and captions
+
+Subtitles come from a transcription service or an uploaded `.srt`, not from the
+video, so they compose rather than being a packager option:
+
+```ts
+import { subtitleFiles, attachSubtitles } from "bitrate-js";
+
+const tracks = [
+  { language: "en", name: "English", content: srtText, default: true },
+  { language: "es", name: "Español", content: spanishVtt },
+];
+
+// SubRip is converted to WebVTT automatically.
+const extra = await subtitleFiles(tracks, { prefix: "video", duration: info.duration });
+const master = attachSubtitles(masterText, tracks, { prefix: "video" });
+```
+
+Upload `extra` alongside the rest and the rewritten master, and players list the
+tracks. Serve the `.vtt` as **`text/vtt`** — as `text/plain` the cues fetch fine
+and display nothing.
+
+Captions already embedded in the video (CEA-608/708 in the H.264 bitstream) are
+**not** extracted; that means parsing NAL units and is not supported.
+
 ### Frames from somewhere else
 
 ```ts
