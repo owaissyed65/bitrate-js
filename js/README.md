@@ -4,8 +4,12 @@
 videos entirely in the browser — no server, no upload-then-wait.
 
 [![npm](https://img.shields.io/npm/v/bitrate-js.svg)](https://www.npmjs.com/package/bitrate-js)
-[![bundle size](https://img.shields.io/bundlephobia/minzip/bitrate-js)](https://bundlephobia.com/package/bitrate-js)
 [![license](https://img.shields.io/npm/l/bitrate-js.svg)](https://github.com/owaissyed65/bitrate-js/blob/main/LICENSE)
+
+### ▶ [Try it live — bitrate-js.vercel.app](https://bitrate-js.vercel.app)
+
+Package a real video in your own browser. Nothing is uploaded; the file never leaves your
+machine.
 
 Rust/WASM does the demuxing, segmenting and manifests. The browser's WebCodecs API does
 the encoding. You supply where the output goes.
@@ -72,16 +76,23 @@ rewriting.
 
 ## Try it
 
-A React showcase runs every feature in the browser: a segment timeline you can click to
-seek, a player with quality switching, live job cards, and security checks run against
-the library itself.
+**[bitrate-js.vercel.app](https://bitrate-js.vercel.app)** runs every feature against a
+real file you choose: a handbook, a segment timeline you can click to seek, a player with
+quality switching, live job cards, and security checks run against the library itself.
+Nothing is uploaded — the packaging happens in your own tab.
+
+To run it locally instead:
 
 ```bash
-npm run build --prefix js
 npm install --prefix examples/react-app && npm run dev --prefix examples/react-app
 ```
 
-Then open http://localhost:5180.
+Then open http://localhost:5180. It installs `bitrate-js` from npm, so this needs no Rust.
+To point it at your own working copy of the library instead:
+
+```bash
+cd js && npm link && cd ../examples/react-app && npm link bitrate-js
+```
 
 ---
 

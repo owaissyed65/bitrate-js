@@ -1,6 +1,6 @@
 {
   "name": "bitrate-js",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Client-side HLS / adaptive-bitrate video packager. Chunk, transcode and upload large videos entirely in the browser — Rust/WASM + WebCodecs, no server.",
   "keywords": [
     "hls",
@@ -31,7 +31,7 @@
     "serverless"
   ],
   "license": "MIT",
-  "homepage": "https://github.com/owaissyed65/bitrate-js#readme",
+  "homepage": "https://bitrate-js.vercel.app",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/owaissyed65/bitrate-js.git",

@@ -3,6 +3,15 @@
 This project follows [semantic versioning](https://semver.org). Before 1.0 the minor
 version may carry breaking changes; they are called out here.
 
+## 0.1.1
+
+No code changes. The npm page now points at the live demo at bitrate-js.vercel.app
+rather than the repository, and the README leads with it — package metadata is frozen
+into a published version, so correcting it needs a release of its own.
+
+The bundlephobia badge is gone; that service rate-limits and rendered as an error more
+often than it rendered a size.
+
 ## 0.1.0 — first published release
 
 The first version on npm. The pipeline is verified end to end in a real browser against
