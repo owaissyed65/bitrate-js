@@ -121,6 +121,13 @@ export {
 export type { TranscodeOptions } from "./transcode.js";
 
 export {
+  transcodeInWorker,
+  createTranscodeWorker,
+  isWorkerTranscodeSupported,
+} from "./worker/client.js";
+export type { WorkerTranscodeArgs } from "./worker/client.js";
+
+export {
   posterFrame,
   thumbnailSprite,
   isThumbnailSupported,

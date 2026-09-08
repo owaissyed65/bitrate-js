@@ -5,15 +5,21 @@ const external = ["@aws-sdk/client-s3", "@supabase/supabase-js", "appwrite"];
 
 export default defineConfig([
   {
-    entry: [
-      "src/index.ts",
-      "src/adapters/presigned.ts",
-      "src/adapters/s3.ts",
-      "src/adapters/supabase.ts",
-      "src/adapters/appwrite.ts",
-      "src/adapters/firebase.ts",
-      "src/zip.ts",
-    ],
+    // Named explicitly rather than derived from the source paths, because the
+    // worker's output name is load-bearing: index.js resolves it with
+    // `new URL("./transcode.worker.js", import.meta.url)`, so it has to sit
+    // beside index.js. Emitted at dist/worker/ it 404s, and a worker that fails
+    // to load simply never answers.
+    entry: {
+      index: "src/index.ts",
+      "adapters/presigned": "src/adapters/presigned.ts",
+      "adapters/s3": "src/adapters/s3.ts",
+      "adapters/supabase": "src/adapters/supabase.ts",
+      "adapters/appwrite": "src/adapters/appwrite.ts",
+      "adapters/firebase": "src/adapters/firebase.ts",
+      "transcode.worker": "src/worker/transcode.worker.ts",
+      zip: "src/zip.ts",
+    },
     format: ["esm"],
     dts: true,
     clean: true,

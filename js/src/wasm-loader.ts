@@ -7,7 +7,6 @@
  */
 
 import init from "./wasm/bitrate_core.js";
-import { wasmBytes } from "./wasm-inline.js";
 
 let ready: Promise<void> | null = null;
 
@@ -25,7 +24,15 @@ export function ensureWasm(
   moduleOrPath?: string | URL | Response | BufferSource | WebAssembly.Module,
 ): Promise<void> {
   ready ??= (async () => {
-    await init({ module_or_path: moduleOrPath ?? wasmBytes() });
+    // Imported dynamically, not at the top of the file, so the module carrying
+    // the embedded WASM becomes its own chunk that loads on first use.
+    //
+    // Statically importing it made every consumer pay ~150 kB the moment they
+    // imported anything from the package — including an app that only calls
+    // isSupported() to decide whether to show a button, and never packages a
+    // frame. Nothing here needs the bytes until this function is called.
+    const source = moduleOrPath ?? (await import("./wasm-inline.js")).wasmBytes();
+    await init({ module_or_path: source });
   })().catch((err: unknown) => {
     // Let a later call retry rather than caching the failure forever.
     ready = null;

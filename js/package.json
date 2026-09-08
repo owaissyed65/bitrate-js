@@ -70,6 +70,7 @@
       "types": "./dist/adapters/firebase.d.ts",
       "import": "./dist/adapters/firebase.js"
     },
+    "./transcode.worker.js": "./dist/transcode.worker.js",
     "./global": "./dist/bitrate.global.js",
     "./zip": {
       "types": "./dist/zip.d.ts",
