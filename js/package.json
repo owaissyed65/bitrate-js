@@ -1,6 +1,6 @@
 {
   "name": "bitrate-js",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Client-side HLS / adaptive-bitrate video packager. Chunk, transcode and upload large videos entirely in the browser — Rust/WASM + WebCodecs, no server.",
   "keywords": [
     "hls",

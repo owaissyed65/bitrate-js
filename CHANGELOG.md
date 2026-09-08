@@ -3,7 +3,7 @@
 This project follows [semantic versioning](https://semver.org). Before 1.0 the minor
 version may carry breaking changes; they are called out here.
 
-## Unreleased
+## 0.2.0
 
 - **Transcoding on a worker thread** — `transcodeInWorker` is the same generator as
   `transcode`, off the main thread. The tab stays usable, and a backgrounded tab is no
