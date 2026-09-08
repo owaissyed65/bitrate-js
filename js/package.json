@@ -31,14 +31,14 @@
     "serverless"
   ],
   "license": "MIT",
-  "homepage": "https://github.com/OWNER/bitrate#readme",
+  "homepage": "https://github.com/muhammadowais-zenkoders/bitrate-js#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/OWNER/bitrate.git",
+    "url": "git+https://github.com/muhammadowais-zenkoders/bitrate-js.git",
     "directory": "js"
   },
   "bugs": {
-    "url": "https://github.com/OWNER/bitrate/issues"
+    "url": "https://github.com/muhammadowais-zenkoders/bitrate-js/issues"
   },
   "type": "module",
   "sideEffects": false,

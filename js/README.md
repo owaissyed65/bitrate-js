@@ -5,7 +5,7 @@ videos entirely in the browser — no server, no upload-then-wait.
 
 [![npm](https://img.shields.io/npm/v/bitrate-js.svg)](https://www.npmjs.com/package/bitrate-js)
 [![bundle size](https://img.shields.io/bundlephobia/minzip/bitrate-js)](https://bundlephobia.com/package/bitrate-js)
-[![license](https://img.shields.io/npm/l/bitrate-js.svg)](https://github.com/OWNER/bitrate/blob/main/LICENSE)
+[![license](https://img.shields.io/npm/l/bitrate-js.svg)](https://github.com/muhammadowais-zenkoders/bitrate-js/blob/main/LICENSE)
 
 Rust/WASM does the demuxing, segmenting and manifests. The browser's WebCodecs API does
 the encoding. You supply where the output goes.
@@ -19,7 +19,7 @@ into the bundle, so there is no `.wasm` asset to copy and consumers never instal
 
 > **Status: 0.1, early.** The pipeline works end-to-end and is verified in a real browser
 > against real files, but the API may still change before 1.0.
-> See [PLAN.md](https://github.com/OWNER/bitrate/blob/main/PLAN.md) for the roadmap and [SECURITY.md](https://github.com/OWNER/bitrate/blob/main/SECURITY.md) for the security model.
+> See [PLAN.md](https://github.com/muhammadowais-zenkoders/bitrate-js/blob/main/PLAN.md) for the roadmap and [SECURITY.md](https://github.com/muhammadowais-zenkoders/bitrate-js/blob/main/SECURITY.md) for the security model.
 
 ---
 
@@ -274,9 +274,9 @@ short-lived) and tells a permanent failure from a retryable one, so a permission
 skips that file rather than consuming its retries.
 
 Complete configuration for every provider — including CORS, cache headers and the settings
-people usually miss — is in **[ADAPTERS.md](https://github.com/OWNER/bitrate/blob/main/ADAPTERS.md)**.
+people usually miss — is in **[ADAPTERS.md](https://github.com/muhammadowais-zenkoders/bitrate-js/blob/main/ADAPTERS.md)**.
 
-Full security model in [SECURITY.md](https://github.com/OWNER/bitrate/blob/main/SECURITY.md): path-traversal defence, untrusted-input
+Full security model in [SECURITY.md](https://github.com/muhammadowais-zenkoders/bitrate-js/blob/main/SECURITY.md): path-traversal defence, untrusted-input
 parsing, supply chain, CSP, and local-data hygiene.
 
 **CSP note:** WASM needs `script-src 'wasm-unsafe-eval'`. The package uses no `eval`,
