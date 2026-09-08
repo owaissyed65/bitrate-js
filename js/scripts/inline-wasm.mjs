@@ -42,6 +42,39 @@ export function wasmBytes(): Uint8Array {
 `;
 
 await writeFile(outPath, source, "utf8");
+
+/*
+ * Remove wasm-pack's fallback to a sibling `.wasm` file.
+ *
+ * The glue ends with `module_or_path = new URL('bitrate_core_bg.wasm',
+ * import.meta.url)` for callers who pass nothing. Nothing here ever does — the
+ * loader always hands over the embedded bytes — so the branch is dead. But it
+ * is dead code a bundler still has to resolve, and Vite warns on every build:
+ *
+ *   new URL("bitrate_core_bg.wasm", import.meta.url) doesn't exist at build
+ *   time, it will remain unchanged to be resolved at runtime
+ *
+ * Worse than the noise, some setups emit that URL into the output, so a
+ * consumer ends up with a request for an asset that was never shipped. Better
+ * to fail loudly on the impossible path than to reference a file that does not
+ * exist.
+ */
+const gluePath = fileURLToPath(new URL("../src/wasm/bitrate_core.js", import.meta.url));
+const glue = await readFile(gluePath, "utf8");
+const fallback = /module_or_path = new URL\('bitrate_core_bg\.wasm', import\.meta\.url\);/;
+
+if (fallback.test(glue)) {
+  await writeFile(
+    gluePath,
+    glue.replace(
+      fallback,
+      "throw new Error('bitrate: the WASM module must be initialised through ensureWasm()');",
+    ),
+    "utf8",
+  );
+  console.log("removed the sibling-.wasm fallback from the generated glue");
+}
+
 console.log(
   `inlined ${bytes.length.toLocaleString("en-US")} bytes of wasm -> ${(base64.length / 1024).toFixed(1)} KB base64`,
 );

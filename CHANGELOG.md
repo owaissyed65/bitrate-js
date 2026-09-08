@@ -3,6 +3,19 @@
 This project follows [semantic versioning](https://semver.org). Before 1.0 the minor
 version may carry breaking changes; they are called out here.
 
+## 0.2.1
+
+Fixes a production build failure introduced by 0.2.0. The worker imported sibling
+chunks, which makes it a code-splitting build, and a bundler's default
+`worker.format` of "iife" cannot express one — Vite failed outright with "UMD and IIFE
+output formats are not supported for code-splitting builds". The worker is now built
+self-contained, so it works under default settings rather than asking every consumer to
+set `worker: { format: "es" }`.
+
+Also removes wasm-pack's fallback to a sibling `.wasm` file. Nothing ever took that
+branch, but bundlers still had to resolve it and Vite warned on every build — and some
+setups emitted a request for an asset that was never shipped.
+
 ## 0.2.0
 
 - **Transcoding on a worker thread** — `transcodeInWorker` is the same generator as

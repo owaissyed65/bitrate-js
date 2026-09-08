@@ -17,7 +17,6 @@ export default defineConfig([
       "adapters/supabase": "src/adapters/supabase.ts",
       "adapters/appwrite": "src/adapters/appwrite.ts",
       "adapters/firebase": "src/adapters/firebase.ts",
-      "transcode.worker": "src/worker/transcode.worker.ts",
       zip: "src/zip.ts",
     },
     format: ["esm"],
@@ -26,6 +25,29 @@ export default defineConfig([
     treeshake: true,
     external,
     // Ship sourcemaps without embedding local absolute paths.
+    sourcemap: true,
+  },
+  {
+    // The worker, built entirely on its own.
+    //
+    // `splitting: false` is the point: a worker that imports sibling chunks is
+    // a code-splitting build, and a bundler's default `worker.format` of
+    // "iife" cannot express one — Vite fails the production build outright with
+    // "UMD and IIFE output formats are not supported for code-splitting
+    // builds". The alternative is asking every consumer to set
+    // `worker: { format: "es" }`, which trades a build error for a
+    // configuration step in everyone's project.
+    //
+    // Self-contained costs a second copy of the WASM on disk. It is never
+    // loaded twice: a page fetches this file only when it transcodes on a
+    // worker, and the main chunk only when it does the work itself.
+    entry: { "transcode.worker": "src/worker/transcode.worker.ts" },
+    format: ["esm"],
+    splitting: false,
+    dts: false,
+    clean: false,
+    treeshake: true,
+    external,
     sourcemap: true,
   },
   {

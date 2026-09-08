@@ -8,7 +8,7 @@ import {
   type JobProgress,
   type SourceInfo,
 } from "bitrate-js";
-import { appwriteAdapter } from "bitrate-js/adapters/appwrite";
+import { appwriteAdapter, toAppwriteFileId } from "bitrate-js/adapters/appwrite";
 
 import { LadderPicker, type LadderName } from "./LadderPicker";
 import { useEffect, useState } from "react";
@@ -264,7 +264,6 @@ export function AppwritePanel() {
         );
 
         // Build view URLs from the deterministic ids the adapter derives.
-        const { toAppwriteFileId } = await import("bitrate-js/adapters/appwrite");
         // A ladder emits a playlist per rung plus a master. The master is the
         // one to hand a player, so prefer it when both are present.
         let playlistSet = false;
