@@ -120,6 +120,13 @@ export {
 } from "./transcode.js";
 export type { TranscodeOptions } from "./transcode.js";
 
+export {
+  posterFrame,
+  thumbnailSprite,
+  isThumbnailSupported,
+} from "./thumbnail.js";
+export type { Poster, PosterOptions, Sprite, SpriteOptions } from "./thumbnail.js";
+
 // Saving a whole rendition as one archive is a common need for anything that
 // lets a user download the result. Tiny, and also available at `bitrate-js/zip`.
 export { createZip, downloadZip, crc32 } from "./zip.js";
