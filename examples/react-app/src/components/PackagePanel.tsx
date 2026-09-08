@@ -45,6 +45,10 @@ export function PackagePanel() {
   const [poster, setPoster] = useState<{ url: string; at: number; bytes: number } | null>(null);
   const [sprite, setSprite] = useState<{ url: string; bytes: number; times: number[]; columns: number } | null>(null);
   const [stillsBusy, setStillsBusy] = useState(false);
+  // Exposed rather than hardcoded: where the poster is taken from matters a
+  // lot on real footage, and 10% in is a default, not an answer.
+  const [posterAt, setPosterAt] = useState(0.1);
+  const [tileCount, setTileCount] = useState(8);
   const [stillsError, setStillsError] = useState<string | null>(null);
   const [segmentDuration, setSegmentDuration] = useState(6);
 
@@ -111,14 +115,14 @@ export function PackagePanel() {
 
     setStillsBusy(true);
     try {
-      const shot = await posterFrame(picked, { atFraction: 0.1, maxWidth: 480 });
+      const shot = await posterFrame(picked, { atFraction: posterAt, maxWidth: 480 });
       setPoster({
         url: URL.createObjectURL(shot.blob),
         at: shot.atSeconds,
         bytes: shot.blob.size,
       });
 
-      const sheet = await thumbnailSprite(picked, { count: 8, maxWidth: 160 });
+      const sheet = await thumbnailSprite(picked, { count: tileCount, maxWidth: 160 });
       setSprite({
         url: URL.createObjectURL(sheet.blob),
         bytes: sheet.blob.size,
@@ -283,6 +287,49 @@ export function PackagePanel() {
                   <p style={{ color: "var(--muted)", fontSize: "0.82rem", margin: "0 0 0.6rem" }}>
                     Decoded here from a few hundred kilobytes of the file, not the whole thing.
                   </p>
+
+                  <div className="row" style={{ gap: "0.5rem", marginBottom: "0.7rem" }}>
+                    <label style={{ color: "var(--dim)", fontSize: "0.8rem" }}>
+                      poster at
+                    </label>
+                    <input
+                      type="range"
+                      min={0}
+                      max={100}
+                      step={5}
+                      value={Math.round(posterAt * 100)}
+                      disabled={stillsBusy}
+                      onChange={(e) => setPosterAt(Number(e.target.value) / 100)}
+                      style={{ flex: "1 1 120px", maxWidth: "160px" }}
+                    />
+                    <span
+                      className="mono"
+                      style={{ color: "var(--muted)", fontSize: "0.78rem", minWidth: "3.2em" }}
+                    >
+                      {Math.round(posterAt * 100)}%
+                    </span>
+
+                    <label style={{ color: "var(--dim)", fontSize: "0.8rem", marginLeft: "0.4rem" }}>
+                      tiles
+                    </label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={40}
+                      value={tileCount}
+                      disabled={stillsBusy}
+                      onChange={(e) => setTileCount(Math.max(1, Number(e.target.value) || 1))}
+                      style={{ width: "4.5rem" }}
+                    />
+
+                    <button
+                      className="small ghost"
+                      disabled={stillsBusy || !file}
+                      onClick={() => file && void makeStills(file)}
+                    >
+                      {stillsBusy ? "Working…" : "Regenerate"}
+                    </button>
+                  </div>
 
                   {stillsBusy && !poster && (
                     <p className="note">Decoding a frame…</p>
